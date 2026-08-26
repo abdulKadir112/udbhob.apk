@@ -1,0 +1,48 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Admins collection
+    match /admins/{adminId} {
+      allow read, write: if true;
+    }
+
+    // Funds collection (Admin creates, members and public of the fund can read)
+    match /funds/{fundId} {
+      allow read, write: if true;
+    }
+
+    // Members collection
+    match /members/{memberId} {
+      allow read, write: if true;
+    }
+
+    // Payments collection
+    match /payments/{paymentId} {
+      allow read, write: if true;
+    }
+
+    // Investments collection
+    match /investments/{investmentId} {
+      allow read, write: if true;
+    }
+
+    // Notifications & activity log collection
+    match /notifications/{notificationId} {
+      allow read, write: if true;
+    }
+
+    // System settings & user profiles
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    match /settings/{settingId} {
+      allow read, write: if true;
+    }
+
+    // Wildcard fallback for subcollections or any future extensions
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}
