@@ -3,13 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { FundProvider, useFund } from './context/FundContext';
 import { ChatProvider } from './context/ChatContext';
 import { Navbar } from './components/Navbar';
 import { OverviewCards } from './components/OverviewCards';
 import { MonthlyPaymentMatrix } from './components/MonthlyPaymentMatrix';
+import { TransactionLedger } from './components/TransactionLedger';
 import { InvestmentSection } from './components/InvestmentSection';
 import { AdminPanel } from './components/AdminPanel';
 import { MemberDetailModal } from './components/MemberDetailModal';
@@ -21,8 +22,10 @@ import { FundProfileModal } from './components/FundProfileModal';
 import { WhatsAppChatView } from './components/chat/WhatsAppChatView';
 import { CallModal } from './components/chat/CallModal';
 import { IncomingCallModal } from './components/chat/IncomingCallModal';
+import { PermissionPromptModal } from './components/PermissionPromptModal';
 import { Member, Investment } from './types';
 import { formatBDT, toBengaliNumerals } from './utils/formatters';
+import { requestNotificationPermission } from './utils/pushNotification';
 import {
   Wallet,
   Shield,
@@ -49,7 +52,7 @@ function MainApp() {
 
   // Primary 2-tab navigation: 1st Chat (Active on Home Screen), 2nd Your Fund
   const [mainTab, setMainTab] = useState<'chat' | 'fund'>('chat');
-  const [fundSubTab, setFundSubTab] = useState<'overview' | 'matrix' | 'investments' | 'admin'>('overview');
+  const [fundSubTab, setFundSubTab] = useState<'overview' | 'matrix' | 'ledger' | 'investments' | 'admin'>('overview');
   const [language, setLanguage] = useState<'bn' | 'en'>('bn');
   const [isGuestMode, setIsGuestMode] = useState<boolean>(false);
 
@@ -60,8 +63,27 @@ function MainApp() {
   const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
   const [isFundProfileModalOpen, setIsFundProfileModalOpen] = useState<boolean>(false);
   const [adminDefaultTab, setAdminDefaultTab] = useState<'payment' | 'investment' | 'transactions' | 'members'>('payment');
+  const [showInitialPermissionModal, setShowInitialPermissionModal] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      const alreadyHandled = localStorage.getItem('probashi_permissions_prompted');
+      if (alreadyHandled === 'true') return false;
+      if ('Notification' in window && Notification.permission === 'granted') return false;
+      return true;
+    }
+    return false;
+  });
 
   const isBn = language === 'bn';
+
+  // Request all permissions automatically on first load / member login if not yet granted
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const alreadyHandled = localStorage.getItem('probashi_permissions_prompted');
+      if (alreadyHandled !== 'true' && 'Notification' in window && Notification.permission !== 'granted') {
+        setShowInitialPermissionModal(true);
+      }
+    }
+  }, [userSession?.userId]);
 
   // Handler to open admin payment form
   const handleOpenAddPayment = () => {
@@ -119,11 +141,19 @@ function MainApp() {
   // 1. If not logged in and not in guest mode, show the dedicated Auth Gateway Page
   if (!userSession && !isGuestMode) {
     return (
-      <AuthLandingPage
-        language={language}
-        setLanguage={setLanguage}
-        onContinueAsGuest={() => setIsGuestMode(true)}
-      />
+      <>
+        <AuthLandingPage
+          language={language}
+          setLanguage={setLanguage}
+          onContinueAsGuest={() => setIsGuestMode(true)}
+        />
+        {showInitialPermissionModal && (
+          <PermissionPromptModal
+            onComplete={() => setShowInitialPermissionModal(false)}
+            isBn={isBn}
+          />
+        )}
+      </>
     );
   }
 
@@ -315,8 +345,8 @@ function MainApp() {
                   </div>
 
                   <button
-                    onClick={() => setFundSubTab('matrix')}
-                    className="mt-3 text-center text-xs font-semibold text-emerald-700 hover:text-emerald-800 pt-2.5 border-t border-slate-100 block w-full transition-colors"
+                    onClick={() => setFundSubTab('ledger')}
+                    className="mt-3 text-center text-xs font-semibold text-emerald-700 hover:text-emerald-800 pt-2.5 border-t border-slate-100 block w-full transition-colors cursor-pointer"
                   >
                     {isBn ? 'সকল সঞ্চয়ের লেজার দেখুন →' : 'View Full Ledger →'}
                   </button>
@@ -332,6 +362,16 @@ function MainApp() {
                 language={language}
                 onSelectMember={(member) => setSelectedMemberForModal(member)}
                 onOpenAddPaymentForMember={handleOpenAddPaymentForMember}
+              />
+            </div>
+          )}
+
+          {fundSubTab === 'ledger' && (
+            <div className="animate-in fade-in duration-200 mt-2">
+              <TransactionLedger
+                language={language}
+                onSelectMember={(member) => setSelectedMemberForModal(member)}
+                onOpenAddPayment={handleOpenAddPayment}
               />
             </div>
           )}
@@ -393,6 +433,14 @@ function MainApp() {
         onClose={() => setIsFundProfileModalOpen(false)}
         language={language}
       />
+
+      {/* Initial App Load Notification Permission Modal */}
+      {showInitialPermissionModal && (
+        <PermissionPromptModal
+          onComplete={() => setShowInitialPermissionModal(false)}
+          isBn={isBn}
+        />
+      )}
     </div>
   );
 }

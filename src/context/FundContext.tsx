@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useMemo } from 'react';
+import React, { createContext, useContext, useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import {
   collection,
   onSnapshot,
@@ -20,6 +20,7 @@ import {
   MonthlyPayment,
   Investment,
   AppNotification,
+  NotificationType,
   OverviewStats,
   YearStats,
   Fund
@@ -33,6 +34,14 @@ import {
   DEFAULT_ADMIN_ID
 } from '../data/seedData';
 import { useAuth } from './AuthContext';
+import { sortPaymentsChronologically } from '../utils/formatters';
+import {
+  checkAndDispatchAutomatedDueReminders,
+  sendManualDueRemindersToAllUnpaid,
+  getMonthlyPaymentStatus,
+  getCurrentDueReminderSlotInfo,
+  DueMemberStatus
+} from '../utils/dueReminderEngine';
 
 interface FundContextType {
   // Fund Metadata
@@ -60,11 +69,16 @@ interface FundContextType {
   payments: MonthlyPayment[];
   investments: Investment[];
   notifications: AppNotification[];
+  allRawNotifications: AppNotification[];
   unreadNotificationCount: number;
 
   // Overview Stats
   stats: OverviewStats;
   yearStats: YearStats;
+  totalFundCapital: number;
+  totalCollectedThisYear: number;
+  totalInvestedAmount: number;
+  activeMembersCount: number;
 
   // Year Selection
   selectedYear: number;
@@ -94,6 +108,33 @@ interface FundContextType {
   // Push Notifications & Audio
   requestPushPermissions: () => Promise<void>;
   pushPermissionStatus: string;
+  sendCustomPushNotification: (notifData: {
+    title: string;
+    titleBn?: string;
+    message: string;
+    messageBn?: string;
+    type?: NotificationType;
+    targetAudience?: 'all' | 'admins' | 'members' | 'user' | 'due_members';
+    targetUserId?: string;
+    targetUserIds?: string[];
+    targetUserName?: string;
+    targetMemberNames?: string[];
+    priority?: 'normal' | 'high' | 'urgent';
+    link?: string;
+    sound?: boolean;
+    postToChatNotice?: boolean;
+  }) => Promise<string>;
+
+  // Automated & Manual Monthly Due Reminders
+  triggerManualDueReminders: (customNote?: string) => Promise<{ count: number; dueMembersList: Member[] }>;
+  monthlyPaymentStatus: {
+    dueMembers: DueMemberStatus[];
+    paidMembers: DueMemberStatus[];
+    allStatuses: DueMemberStatus[];
+    totalDueCount: number;
+    totalPaidCount: number;
+    slotInfo: ReturnType<typeof getCurrentDueReminderSlotInfo>;
+  };
 
   // System & Utilities
   seedDatabase: (force?: boolean) => Promise<void>;
@@ -166,6 +207,18 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
   });
   const [loading, setLoading] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(true);
+
+  // Compute currently logged-in member from session
+  const currentMember = useMemo(() => {
+    if (!userSession) return null;
+    return members.find(
+      (m) =>
+        m.id === userSession.memberId ||
+        m.id === userSession.uid ||
+        (userSession.phone && m.phone === userSession.phone) ||
+        (userSession.username && m.username === userSession.username)
+    ) || null;
+  }, [members, userSession]);
 
   // Default year to current Gregorian year
   const currentYearNumber = new Date().getFullYear();
@@ -249,9 +302,13 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           return p.fundId === activeFundId || (currentFund && p.fundId === currentFund.id);
         });
-        setPayments(filtered);
+        
+        // Sort chronologically from newest to oldest (top to bottom)
+        const sorted = sortPaymentsChronologically(filtered);
+
+        setPayments(sorted);
         try {
-          localStorage.setItem(`udbhob_payments_${activeFundId}`, JSON.stringify(filtered));
+          localStorage.setItem(`udbhob_payments_${activeFundId}`, JSON.stringify(sorted));
         } catch {}
       },
       (err) => console.warn('Payments listener error:', err)
@@ -260,7 +317,49 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsub();
   }, [activeFundId, currentFund?.id]);
 
-  // 4. Real-time listener for Investments (scoped to activeFundId with fallback)
+  // 4. Auto-clean orphan payments if member does not exist in this fund anymore
+  useEffect(() => {
+    if (loading || members.length === 0 || payments.length === 0) return;
+
+    const validMemberIds = new Set(members.map((m) => m.id));
+    const validMemberNames = new Set(
+      members.flatMap((m) => [m.name?.trim(), m.nameBn?.trim()].filter(Boolean) as string[])
+    );
+    const validUsernames = new Set(
+      members.map((m) => m.username?.trim()).filter(Boolean) as string[]
+    );
+
+    const orphanPayments = payments.filter((p) => {
+      const hasValidId = validMemberIds.has(p.memberId);
+      const hasValidName = p.memberName ? validMemberNames.has(p.memberName.trim()) : false;
+      const hasValidUser = p.memberId ? validUsernames.has(p.memberId.trim()) : false;
+      return !hasValidId && !hasValidName && !hasValidUser;
+    });
+
+    if (orphanPayments.length > 0) {
+      console.info(`Found ${orphanPayments.length} orphan payment(s) for non-existent members. Auto-cleaning...`);
+      // Update local state
+      setPayments((prev) =>
+        prev.filter((p) => {
+          const hasValidId = validMemberIds.has(p.memberId);
+          const hasValidName = p.memberName ? validMemberNames.has(p.memberName.trim()) : false;
+          const hasValidUser = p.memberId ? validUsernames.has(p.memberId.trim()) : false;
+          return hasValidId || hasValidName || hasValidUser;
+        })
+      );
+
+      // Clean up from Firestore in background
+      orphanPayments.forEach((op) => {
+        if (op.id) {
+          deleteDoc(doc(db, 'payments', op.id)).catch((err) => {
+            console.warn('Auto delete orphan payment error:', err);
+          });
+        }
+      });
+    }
+  }, [members, loading, payments]);
+
+  // 5. Real-time listener for Investments (scoped to activeFundId with fallback)
   useEffect(() => {
     const investmentsRef = collection(db, 'investments');
     const unsub = onSnapshot(
@@ -284,6 +383,73 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => unsub();
   }, [activeFundId, currentFund?.id]);
 
+  // Register Service Worker for Web Push
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch((err) => {
+        console.debug('ServiceWorker registration note:', err);
+      });
+    }
+  }, []);
+
+  // Track initial mount time to prevent alerting old notifications
+  const [mountedTime] = useState<number>(() => Date.now());
+  const seenNotificationIdsRef = React.useRef<Set<string>>(new Set());
+
+  // Trigger Native Device Push Notification (Web Push, Vibration & Sounds)
+  const triggerDevicePushNotification = React.useCallback(
+    (notif: {
+      title: string;
+      message: string;
+      priority?: string;
+      type?: string;
+      sound?: boolean;
+      link?: string;
+    }) => {
+      // 1. Play chime audio
+      if (notif.sound !== false && soundEnabled) {
+        playSoundEffect(notif.priority === 'urgent' ? 'investment' : 'payment');
+      }
+
+      // 2. Vibrate mobile phone (Android / Chrome)
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        try {
+          if (notif.priority === 'urgent') {
+            navigator.vibrate([300, 100, 300, 100, 300]);
+          } else {
+            navigator.vibrate([200, 100, 200]);
+          }
+        } catch {}
+      }
+
+      // 3. Native Push Notification (Desktop & Mobile Browser Heads-Up Alert)
+      if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+        try {
+          if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+            navigator.serviceWorker.ready.then((reg) => {
+              (reg.showNotification as any)(notif.title, {
+                body: notif.message,
+                icon: '/udbhob_logo.svg',
+                badge: '/udbhob_logo.svg',
+                vibrate: notif.priority === 'urgent' ? [300, 100, 300] : [200, 100, 200],
+                tag: `udbhob-${Date.now()}`,
+                data: { url: notif.link || window.location.href },
+              });
+            });
+          } else {
+            new Notification(notif.title, {
+              body: notif.message,
+              icon: '/udbhob_logo.svg',
+            });
+          }
+        } catch (err) {
+          console.debug('Native notification pop error:', err);
+        }
+      }
+    },
+    [soundEnabled]
+  );
+
   // 5. Real-time listener for Notifications (scoped to activeFundId with fallback)
   useEffect(() => {
     const notificationsRef = collection(db, 'notifications');
@@ -299,6 +465,66 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
         filtered.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
         setNotifications(filtered);
+
+        // Check for new incoming notifications to trigger instant device push notification!
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'added') {
+            const notif = { id: change.doc.id, ...change.doc.data() } as AppNotification;
+            const notifTime = new Date(notif.timestamp).getTime();
+            
+            // Only trigger alert if notification is fresh (created after app mount or within last 45 seconds)
+            if (notifTime > mountedTime - 45000 && !seenNotificationIdsRef.current.has(notif.id)) {
+              seenNotificationIdsRef.current.add(notif.id);
+
+              const currentUid = userSession?.uid;
+              const currentMemberId = userSession?.memberId || currentMember?.id;
+              const currentUsername = userSession?.username || currentMember?.username;
+              const currentPhone = currentMember?.phone;
+
+              // Audience check: Is this notification intended for the current user?
+              const isTargetAdmin = notif.targetAudience === 'admins';
+              const isTargetUserAudience = notif.targetAudience === 'user' || notif.targetAudience === 'due_members';
+              
+              const matchesThisUser = isTargetUserAudience && (
+                (notif.targetUserId && (
+                  notif.targetUserId === currentUid ||
+                  notif.targetUserId === currentMemberId ||
+                  notif.targetUserId === currentUsername ||
+                  notif.targetUserId === currentPhone
+                )) ||
+                (Array.isArray(notif.targetUserIds) && (
+                  (currentUid && notif.targetUserIds.includes(currentUid)) ||
+                  (currentMemberId && notif.targetUserIds.includes(currentMemberId)) ||
+                  (currentUsername && notif.targetUserIds.includes(currentUsername)) ||
+                  (currentPhone && notif.targetUserIds.includes(currentPhone))
+                ))
+              );
+
+              let shouldAlert = false;
+              if (!notif.targetAudience || notif.targetAudience === 'all') {
+                shouldAlert = true;
+              } else if (isTargetAdmin && isAdmin) {
+                shouldAlert = true;
+              } else if (matchesThisUser) {
+                shouldAlert = true;
+              } else if (notif.targetAudience === 'members' && !isAdmin) {
+                shouldAlert = true;
+              }
+
+              if (shouldAlert) {
+                triggerDevicePushNotification({
+                  title: notif.titleBn || notif.title,
+                  message: notif.messageBn || notif.message,
+                  priority: notif.priority || 'normal',
+                  type: notif.type,
+                  sound: notif.sound,
+                  link: notif.link,
+                });
+              }
+            }
+          }
+        });
+
         try {
           localStorage.setItem(`udbhob_notifs_${activeFundId}`, JSON.stringify(filtered));
         } catch {}
@@ -307,7 +533,89 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
     );
 
     return () => unsub();
-  }, [activeFundId, currentFund?.id]);
+  }, [activeFundId, currentFund?.id, isAdmin, userSession, currentMember, mountedTime, triggerDevicePushNotification]);
+
+  // Automated Monthly Due Reminder Engine (Runs on 10th-15th at 8:00 AM & 8:00 PM for unpaid members)
+  useEffect(() => {
+    if (!activeFundId || members.length === 0) return;
+
+    const runAutomatedDueCheck = async () => {
+      try {
+        await checkAndDispatchAutomatedDueReminders({
+          fundId: activeFundId,
+          members,
+          payments,
+          currentFund,
+          userSession,
+        });
+      } catch (err) {
+        console.warn('Automated due reminder scheduler error:', err);
+      }
+    };
+
+    // Run first check 3 seconds after loading
+    const timer = setTimeout(runAutomatedDueCheck, 3000);
+    // Check every 3 minutes while application is open
+    const interval = setInterval(runAutomatedDueCheck, 3 * 60 * 1000);
+
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
+  }, [activeFundId, members, payments, currentFund, userSession]);
+
+  // Compute live current month dues status
+  const monthlyPaymentStatus = useMemo(() => {
+    const now = new Date();
+    const targetYear = now.getFullYear();
+    const targetMonth = now.getMonth() + 1;
+    const paymentStatus = getMonthlyPaymentStatus(members, payments, targetYear, targetMonth);
+    const slotInfo = getCurrentDueReminderSlotInfo(now);
+
+    return {
+      ...paymentStatus,
+      slotInfo,
+    };
+  }, [members, payments]);
+
+  // Filter visible notifications for user
+  const userVisibleNotifications = useMemo(() => {
+    if (isAdmin) return notifications;
+    const currentUid = userSession?.uid;
+    const currentMemberId = userSession?.memberId || currentMember?.id;
+    const currentUsername = userSession?.username || currentMember?.username;
+    const currentPhone = currentMember?.phone;
+
+    return notifications.filter((n) => {
+      if (!n.targetAudience || n.targetAudience === 'all' || n.targetAudience === 'members') return true;
+      if (n.targetAudience === 'admins') return false;
+      if (n.targetAudience === 'user' || n.targetAudience === 'due_members') {
+        if (n.targetUserId && (
+          n.targetUserId === currentUid ||
+          n.targetUserId === currentMemberId ||
+          n.targetUserId === currentUsername ||
+          n.targetUserId === currentPhone
+        )) {
+          return true;
+        }
+        if (Array.isArray(n.targetUserIds) && (
+          (currentUid && n.targetUserIds.includes(currentUid)) ||
+          (currentMemberId && n.targetUserIds.includes(currentMemberId)) ||
+          (currentUsername && n.targetUserIds.includes(currentUsername)) ||
+          (currentPhone && n.targetUserIds.includes(currentPhone))
+        )) {
+          return true;
+        }
+        return false;
+      }
+      return false;
+    });
+  }, [notifications, isAdmin, userSession, currentMember]);
+
+  // Compute unread count based on visible notifications
+  const unreadNotificationCount = useMemo(() => {
+    return userVisibleNotifications.filter((n) => !n.read).length;
+  }, [userVisibleNotifications]);
 
   // Play audio sound on notification / action
   const playSoundEffect = (type: 'payment' | 'investment' | 'success') => {
@@ -428,11 +736,6 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
   };
-
-  // Unread notifications count
-  const unreadNotificationCount = useMemo(() => {
-    return notifications.filter((n) => !n.read).length;
-  }, [notifications]);
 
   // ---------------- Fund Management Actions ----------------
   const createFund = async (fundData: Partial<Fund>): Promise<string> => {
@@ -743,13 +1046,92 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const deleteMember = async (id: string) => {
-    await deleteDoc(doc(db, 'members', id));
+    try {
+      const targetMember = members.find((m) => m.id === id);
+      const targetName = targetMember?.name?.trim();
+      const targetNameBn = targetMember?.nameBn?.trim();
+      const targetUsername = targetMember?.username?.trim();
+
+      // 1. Delete member document from Firestore
+      await deleteDoc(doc(db, 'members', id));
+
+      // 2. Cascade delete all payment / transaction records belonging to this member in Firestore
+      try {
+        const paymentsRef = collection(db, 'payments');
+        const paymentsSnap = await getDocs(paymentsRef);
+        const deletePaymentPromises: Promise<void>[] = [];
+
+        paymentsSnap.forEach((pDoc) => {
+          const pData = pDoc.data();
+          const matchesId = pData.memberId === id;
+          const matchesName = Boolean(targetName && pData.memberName?.trim() === targetName);
+          const matchesNameBn = Boolean(targetNameBn && pData.memberName?.trim() === targetNameBn);
+          const matchesUser = Boolean(
+            targetUsername &&
+              (pData.memberId?.trim() === targetUsername || pData.username?.trim() === targetUsername)
+          );
+
+          if (matchesId || matchesName || matchesNameBn || matchesUser) {
+            deletePaymentPromises.push(deleteDoc(pDoc.ref));
+          }
+        });
+
+        await Promise.all(deletePaymentPromises);
+      } catch (pErr) {
+        console.warn('Error deleting associated member payments:', pErr);
+      }
+
+      // 3. Clean up related notifications for this member
+      try {
+        const notifSnap = await getDocs(collection(db, 'notifications'));
+        const notifDeletePromises: Promise<void>[] = [];
+        notifSnap.forEach((nDoc) => {
+          const nData = nDoc.data();
+          if (nData.metadata?.memberId === id) {
+            notifDeletePromises.push(deleteDoc(nDoc.ref));
+          }
+        });
+        await Promise.all(notifDeletePromises);
+      } catch (nErr) {
+        console.warn('Error deleting member notifications:', nErr);
+      }
+
+      // 4. Update local states immediately
+      const updatedMembers = members.filter((m) => m.id !== id);
+      const updatedPayments = payments.filter((p) => {
+        const matchesId = p.memberId === id;
+        const matchesName = Boolean(targetName && p.memberName?.trim() === targetName);
+        const matchesNameBn = Boolean(targetNameBn && p.memberName?.trim() === targetNameBn);
+        const matchesUser = Boolean(
+          targetUsername &&
+            (p.memberId?.trim() === targetUsername || (p as any).username?.trim() === targetUsername)
+        );
+        return !(matchesId || matchesName || matchesNameBn || matchesUser);
+      });
+
+      setMembers(updatedMembers);
+      setPayments(updatedPayments);
+
+      try {
+        localStorage.setItem(`udbhob_members_${activeFundId}`, JSON.stringify(updatedMembers));
+        localStorage.setItem(`udbhob_payments_${activeFundId}`, JSON.stringify(updatedPayments));
+      } catch {}
+
+      playSoundEffect('success');
+    } catch (err) {
+      console.error('Failed to delete member and associated transactions:', err);
+      throw err;
+    }
   };
 
   // ---------------- Payment CRUD ----------------
   const addPayment = async (
     paymentData: Omit<MonthlyPayment, 'id' | 'fundId' | 'adminId' | 'createdAt'>
   ): Promise<string> => {
+    const now = new Date();
+    const defaultTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const defaultDate = now.toISOString().split('T')[0];
+
     const newPayment: Omit<MonthlyPayment, 'id'> = {
       ...paymentData,
       fundId: currentFund.id || DEFAULT_FUND_ID,
@@ -757,13 +1139,25 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
       amount: Number(paymentData.amount),
       year: Number(paymentData.year),
       month: Number(paymentData.month),
+      paymentDate: paymentData.paymentDate || defaultDate,
+      paymentTime: paymentData.paymentTime || defaultTime,
       receiptNumber: paymentData.receiptNumber || `PMF-${paymentData.year}-${String(paymentData.month).padStart(2, '0')}-${Math.floor(1000 + Math.random() * 9000)}`,
-      createdAt: new Date().toISOString(),
+      createdAt: now.toISOString(),
       verified: true,
       createdBy: userSession?.displayName || 'Admin',
     };
 
     const docRef = await addDoc(collection(db, 'payments'), cleanForFirestore(newPayment));
+
+    // Optimistically prepend to payments state sorted
+    const createdObj: MonthlyPayment = { id: docRef.id, ...newPayment };
+    setPayments((prev) => {
+      const next = sortPaymentsChronologically([createdObj, ...prev.filter((p) => p.id !== docRef.id)]);
+      try {
+        localStorage.setItem(`udbhob_payments_${activeFundId}`, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
 
     // Month names in Bengali
     const monthNamesBn = [
@@ -799,25 +1193,77 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const deletePayment = async (id: string) => {
-    await deleteDoc(doc(db, 'payments', id));
+    if (!id) return;
+    const targetId = String(id).trim();
+
+    try {
+      // 1. Optimistically update local state immediately
+      setPayments((prev) => {
+        const updated = prev.filter((p) => String(p.id).trim() !== targetId);
+        try {
+          localStorage.setItem(`udbhob_payments_${activeFundId}`, JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+
+      // 2. Delete document from Firestore
+      try {
+        await deleteDoc(doc(db, 'payments', targetId));
+      } catch (fErr) {
+        console.warn('Firestore payment deleteDoc warning (item removed locally):', fErr);
+      }
+
+      playSoundEffect('success');
+    } catch (err) {
+      console.error('Failed to delete payment:', err);
+      // Fallback state update
+      setPayments((prev) => {
+        const updated = prev.filter((p) => String(p.id).trim() !== targetId);
+        try {
+          localStorage.setItem(`udbhob_payments_${activeFundId}`, JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+      playSoundEffect('success');
+    }
   };
 
   const batchAddPayments = async (
     paymentsList: Array<Omit<MonthlyPayment, 'id' | 'fundId' | 'adminId' | 'createdAt'>>
   ) => {
+    const now = new Date();
+    const defaultTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const defaultDate = now.toISOString().split('T')[0];
+
     const batch = writeBatch(db);
+    const addedItems: MonthlyPayment[] = [];
+
     paymentsList.forEach((p) => {
       const docRef = doc(collection(db, 'payments'));
-      batch.set(docRef, cleanForFirestore({
+      const itemData: Omit<MonthlyPayment, 'id'> = {
         ...p,
         fundId: currentFund.id || DEFAULT_FUND_ID,
         adminId: userSession?.adminId || userSession?.uid || DEFAULT_ADMIN_ID,
-        createdAt: new Date().toISOString(),
+        paymentDate: p.paymentDate || defaultDate,
+        paymentTime: p.paymentTime || defaultTime,
+        createdAt: now.toISOString(),
         verified: true,
         createdBy: userSession?.displayName || 'Admin',
-      }));
+      };
+      batch.set(docRef, cleanForFirestore(itemData));
+      addedItems.push({ id: docRef.id, ...itemData });
     });
+
     await batch.commit();
+
+    setPayments((prev) => {
+      const next = sortPaymentsChronologically([...addedItems, ...prev]);
+      try {
+        localStorage.setItem(`udbhob_payments_${activeFundId}`, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+
     playSoundEffect('payment');
   };
 
@@ -887,6 +1333,117 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
       batch.delete(docRef);
     });
     await batch.commit();
+  };
+
+  // Custom Push Notification Dispatcher (For Admin to send broadcast / custom push notifications)
+  const sendCustomPushNotification = async (notifData: {
+    title: string;
+    titleBn?: string;
+    message: string;
+    messageBn?: string;
+    type?: NotificationType;
+    targetAudience?: 'all' | 'admins' | 'members' | 'user' | 'due_members';
+    targetUserId?: string;
+    targetUserIds?: string[];
+    targetUserName?: string;
+    targetMemberNames?: string[];
+    priority?: 'normal' | 'high' | 'urgent';
+    link?: string;
+    sound?: boolean;
+    postToChatNotice?: boolean;
+  }): Promise<string> => {
+    const effectiveFundId = currentFund?.id || activeFundId || DEFAULT_FUND_ID;
+    const cleanTitle = notifData.title.trim();
+    const cleanTitleBn = notifData.titleBn?.trim() || cleanTitle;
+    const cleanMessage = notifData.message.trim();
+    const cleanMessageBn = notifData.messageBn?.trim() || cleanMessage;
+    const notifType = notifData.type || 'broadcast';
+    const audience = notifData.targetAudience || 'all';
+    const priority = notifData.priority || 'high';
+
+    // If audience is due_members, find all currently unpaid members and populate targetUserIds
+    let finalTargetUserId = notifData.targetUserId;
+    let finalTargetUserIds = notifData.targetUserIds;
+    let finalTargetUserName = notifData.targetUserName;
+
+    if (audience === 'due_members') {
+      const now = new Date();
+      const { dueMembers } = getMonthlyPaymentStatus(members, payments, now.getFullYear(), now.getMonth() + 1);
+      finalTargetUserIds = dueMembers.map((d) => d.member.id);
+      finalTargetUserName = `বকেয়া সদস্যগণ (${dueMembers.length} জন)`;
+    }
+
+    const newNotif: Omit<AppNotification, 'id'> = {
+      fundId: effectiveFundId,
+      adminId: userSession?.adminId || userSession?.uid || DEFAULT_ADMIN_ID,
+      senderName: userSession?.displayName || currentFund?.adminName || 'এডমিন',
+      senderRole: userSession?.role || 'admin',
+      title: cleanTitle,
+      titleBn: cleanTitleBn,
+      message: cleanMessage,
+      messageBn: cleanMessageBn,
+      type: notifType,
+      targetAudience: audience,
+      targetUserId: finalTargetUserId,
+      targetUserIds: finalTargetUserIds,
+      targetUserName: finalTargetUserName,
+      targetMemberNames: notifData.targetMemberNames,
+      priority: priority,
+      sound: notifData.sound ?? true,
+      link: notifData.link,
+      timestamp: new Date().toISOString(),
+      read: false,
+      metadata: {
+        badge: audience === 'due_members' ? 'বকেয়া রিমাইন্ডার' : priority === 'urgent' ? 'জরুরি' : 'নোটিশ',
+      },
+    };
+
+    const docRef = await addDoc(collection(db, 'notifications'), cleanForFirestore(newNotif));
+
+    // Optional post to chat notices board
+    if (notifData.postToChatNotice) {
+      try {
+        await addDoc(collection(db, 'chat_messages'), cleanForFirestore({
+          fundId: effectiveFundId,
+          senderId: userSession?.uid || 'admin',
+          senderName: userSession?.displayName || currentFund?.adminName || 'এডমিন',
+          senderRole: 'admin',
+          type: 'notice',
+          text: `📢 *${cleanTitleBn}*\n\n${cleanMessageBn}${notifData.link ? `\n\n🔗 ${notifData.link}` : ''}`,
+          timestamp: new Date().toISOString(),
+        }));
+      } catch (chatErr) {
+        console.warn('Could not post notice to chat:', chatErr);
+      }
+    }
+
+    // Trigger local push preview/vibration for sender
+    triggerDevicePushNotification({
+      title: cleanTitleBn,
+      message: cleanMessageBn,
+      priority: priority,
+      type: notifType,
+      sound: notifData.sound,
+      link: notifData.link,
+    });
+
+    return docRef.id;
+  };
+
+  // Manual Trigger for Due Reminders (Admin 1-click dispatch)
+  const triggerManualDueReminders = async (customNote?: string) => {
+    const effectiveFundId = currentFund?.id || activeFundId || DEFAULT_FUND_ID;
+    const res = await sendManualDueRemindersToAllUnpaid({
+      fundId: effectiveFundId,
+      members,
+      payments,
+      currentFund,
+      userSession,
+      customNote,
+      targetYear: selectedYear,
+      targetMonth: new Date().getMonth() + 1,
+    });
+    return res;
   };
 
   // ---------------- Seed Database ----------------
@@ -1011,10 +1568,15 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
         members,
         payments,
         investments,
-        notifications,
+        notifications: userVisibleNotifications,
+        allRawNotifications: notifications,
         unreadNotificationCount,
         stats,
         yearStats,
+        totalFundCapital: stats.totalCollected || 0,
+        totalCollectedThisYear: yearStats.collectedInSelectedYear || 0,
+        totalInvestedAmount: stats.totalInvested || 0,
+        activeMembersCount: members.length,
         selectedYear,
         setSelectedYear,
         availableYears,
@@ -1033,6 +1595,9 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
         markAllNotificationsAsRead,
         markAllNotificationsRead: markAllNotificationsAsRead,
         clearAllNotifications,
+        sendCustomPushNotification,
+        triggerManualDueReminders,
+        monthlyPaymentStatus,
         requestPushPermissions,
         pushPermissionStatus,
         seedDatabase,

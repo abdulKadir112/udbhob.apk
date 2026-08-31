@@ -102,7 +102,7 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
           </p>
         </div>
 
-        {/* 4. Total Members (মোট সদস্য) */}
+        {/* 4. Total Members (মোট সদস্য ও মোট শেয়ার) */}
         <div
           id="card-total-members"
           className="bg-white p-3.5 sm:p-5 rounded-2xl border border-slate-200 shadow-xs hover:shadow-md transition-all relative overflow-hidden group cursor-pointer"
@@ -117,10 +117,10 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
             </div>
           </div>
           <p className="text-xl sm:text-2xl lg:text-3xl font-bold text-blue-600 tracking-tight">
-            {isBn ? toBengaliNumerals(stats.totalMembers) : stats.totalMembers}
+            {isBn ? `${toBengaliNumerals(stats.totalMembers)} জন` : `${stats.totalMembers}`}
           </p>
-          <p className="text-[9.5px] sm:text-2xs text-blue-500 mt-1 font-medium">
-            {isBn ? 'প্রবাসী সক্রিয় সদস্য' : 'Active global diaspora'}
+          <p className="text-[9.5px] sm:text-2xs text-blue-700 font-bold mt-1 flex items-center gap-1">
+            <span>{isBn ? `মোট শেয়ার: ${toBengaliNumerals(members.reduce((sum, m) => sum + (m.shares || 1), 0))} টি` : `Total Shares: ${members.reduce((sum, m) => sum + (m.shares || 1), 0)}`}</span>
           </p>
         </div>
 

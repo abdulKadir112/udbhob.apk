@@ -4,6 +4,23 @@
 
 class SoundEffects {
   private ctx: AudioContext | null = null;
+  private isUnlocked: boolean = false;
+
+  unlockAudio() {
+    if (this.isUnlocked) return;
+    try {
+      const ctx = this.getContext();
+      if (ctx && ctx.state === 'suspended') {
+        ctx.resume().then(() => {
+          this.isUnlocked = true;
+        }).catch(() => {});
+      } else if (ctx) {
+        this.isUnlocked = true;
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   private getContext(): AudioContext | null {
     if (typeof window === 'undefined') return null;

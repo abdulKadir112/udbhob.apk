@@ -21,17 +21,20 @@ import {
   Camera,
   Building,
   BellRing,
+  Smartphone,
+  Download,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useFund } from '../context/FundContext';
 import { useChat } from '../context/ChatContext';
 import { formatBDT, toBengaliNumerals } from '../utils/formatters';
+import { PwaInstallModal } from './PwaInstallModal';
 
 interface NavbarProps {
   mainTab: 'chat' | 'fund';
   setMainTab: (tab: 'chat' | 'fund') => void;
-  fundSubTab: 'overview' | 'matrix' | 'investments' | 'admin';
-  setFundSubTab: (tab: 'overview' | 'matrix' | 'investments' | 'admin') => void;
+  fundSubTab: 'overview' | 'matrix' | 'ledger' | 'investments' | 'admin';
+  setFundSubTab: (tab: 'overview' | 'matrix' | 'ledger' | 'investments' | 'admin') => void;
   onOpenAddPayment: () => void;
   onOpenAddInvestment: () => void;
   onOpenAuthModal: () => void;
@@ -75,6 +78,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   const [isYearDropdownOpen, setIsYearDropdownOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isInstallModalOpen, setIsInstallModalOpen] = useState(false);
 
   const isBn = language === 'bn';
   const fundTitle = currentFund?.name || userSession?.fundName || (isBn ? 'প্রবাসী মুক্ত ফান্ড' : 'Probashi Mukto Fund');
@@ -196,6 +200,16 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
             )}
 
+            {/* Install App Button (PWA) */}
+            <button
+              onClick={() => setIsInstallModalOpen(true)}
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 text-xs font-bold text-emerald-900 shadow-2xs transition-all cursor-pointer hover:scale-[1.02]"
+              title={isBn ? 'মোবাইল ও পিসিতে অ্যাপ ইনস্টল করুন' : 'Install Mobile Web App'}
+            >
+              <Smartphone className="w-3.5 h-3.5 text-emerald-700" />
+              <span>{isBn ? 'অ্যাপ ইনস্টল' : 'Install App'}</span>
+            </button>
+
             {/* Notification Bell */}
             <button
               onClick={onOpenNotifications}
@@ -304,6 +318,15 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </>
               )}
 
+              {/* Install App Button (Mobile PWA) */}
+              <button
+                onClick={() => setIsInstallModalOpen(true)}
+                className="p-1.5 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-900 flex items-center justify-center cursor-pointer"
+                title={isBn ? 'অ্যাপ ইনস্টল করুন' : 'Install App'}
+              >
+                <Smartphone className="w-4 h-4 text-emerald-700" />
+              </button>
+
               {/* Notification Bell */}
               <button
                 onClick={onOpenNotifications}
@@ -408,6 +431,18 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
 
               <button
+                id="fund-sub-ledger"
+                onClick={() => setFundSubTab('ledger')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shrink-0 ${
+                  fundSubTab === 'ledger'
+                    ? 'bg-emerald-700 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-950 hover:bg-slate-100'
+                }`}
+              >
+                {isBn ? 'লেনদেন লেজার' : 'Ledger'}
+              </button>
+
+              <button
                 id="fund-sub-investments"
                 onClick={() => setFundSubTab('investments')}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shrink-0 ${
@@ -449,6 +484,11 @@ export const Navbar: React.FC<NavbarProps> = ({
         )}
 
       </div>
+      <PwaInstallModal
+        isOpen={isInstallModalOpen}
+        onClose={() => setIsInstallModalOpen(false)}
+        language={language}
+      />
     </header>
   );
 

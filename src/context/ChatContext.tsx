@@ -26,6 +26,21 @@ import { soundEffects } from '../utils/audioFeedback';
 import { cleanForFirestore } from '../utils/firestoreUtils';
 import { DEFAULT_FUND_ID } from '../data/seedData';
 import { webrtcManager } from '../utils/webrtcManager';
+import {
+  triggerIncomingCallNotification,
+  cancelIncomingCallNotification,
+  sendPushNotification,
+  registerServiceWorker,
+  requestScreenWakeLock,
+  releaseScreenWakeLock,
+} from '../utils/pushNotification';
+import {
+  saveMessagesOffline,
+  loadMessagesOffline,
+  queueOfflineMessage,
+  getPendingOfflineMessages,
+  removePendingOfflineMessage,
+} from '../utils/offlineStorage';
 
 const isDefaultFund = (id?: string | null): boolean => {
   return (
@@ -37,22 +52,22 @@ const isDefaultFund = (id?: string | null): boolean => {
   );
 };
 
-// Relative time helper in Bengali
+// Relative time helper in Bengali with accurate minute/hour tracking
 const formatRelativeTimeBn = (isoString?: string): string => {
-  if (!isoString) return 'অফলাইন';
+  if (!isoString) return 'নিষ্ক্রিয়';
   const diffMs = Date.now() - new Date(isoString).getTime();
   if (isNaN(diffMs) || diffMs < 0) return 'অনলাইনে আছেন';
 
   const diffSec = Math.floor(diffMs / 1000);
   if (diffSec < 45) return 'অনলাইনে আছেন';
-  if (diffSec < 120) return '১ মিনিট আগে';
+  if (diffSec < 90) return '১ মিনিট আগে সক্রিয় ছিলেন';
   const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin} মিনিট আগে`;
+  if (diffMin < 60) return `${diffMin} মিনিট আগে সক্রিয় ছিলেন`;
   const diffHours = Math.floor(diffMin / 60);
-  if (diffHours < 24) return `${diffHours} ঘণ্টা আগে`;
+  if (diffHours < 24) return `${diffHours} ঘণ্টা আগে সক্রিয় ছিলেন`;
   const diffDays = Math.floor(diffHours / 24);
-  if (diffDays === 1) return 'গতকাল';
-  return `${diffDays} দিন আগে`;
+  if (diffDays === 1) return 'গতকাল সক্রিয় ছিলেন';
+  return `${diffDays} দিন আগে সক্রিয় ছিলেন`;
 };
 
 interface ChatContextType {
@@ -99,12 +114,63 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
-      const saved = localStorage.getItem(`probashi_chat_msgs_${activeFundId || 'all'}`);
+      const saved = localStorage.getItem(`probashi_chat_msgs_${activeFundId || 'all'}`) ||
+                    localStorage.getItem('probashi_chat_msgs_universal');
       return saved ? JSON.parse(saved) : [];
     } catch {
       return [];
     }
   });
+
+  // Load complete offline messages from IndexedDB for seamless PWA offline viewing
+  useEffect(() => {
+    let isMounted = true;
+    loadMessagesOffline(activeFundId || undefined).then((offlineMsgs) => {
+      if (isMounted && offlineMsgs && offlineMsgs.length > 0) {
+        setMessages((prev) => {
+          if (prev.length === 0) return offlineMsgs;
+          const existingMap = new Map<string, ChatMessage>(prev.map((m) => [m.id, m]));
+          offlineMsgs.forEach((m) => {
+            if (!existingMap.has(m.id)) {
+              existingMap.set(m.id, m);
+            }
+          });
+          const merged: ChatMessage[] = Array.from(existingMap.values());
+          merged.sort((a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime());
+          return merged;
+        });
+      }
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [activeFundId]);
+
+  // Automatic sync for messages composed while offline when internet connection resumes
+  useEffect(() => {
+    const syncOfflineQueue = async () => {
+      if (typeof navigator === 'undefined' || !navigator.onLine) return;
+      try {
+        const pending = await getPendingOfflineMessages();
+        for (const msg of pending) {
+          try {
+            await setDoc(doc(db, 'chat_messages', msg.id), cleanForFirestore(msg));
+            await removePendingOfflineMessage(msg.id);
+          } catch (err) {
+            console.debug('Pending sync retry later:', err);
+          }
+        }
+      } catch {}
+    };
+
+    window.addEventListener('online', syncOfflineQueue);
+    // Initial attempt if already online
+    syncOfflineQueue();
+
+    return () => {
+      window.removeEventListener('online', syncOfflineQueue);
+    };
+  }, []);
 
   const [replyingTo, setReplyingTo] = useState<ChatMessage | null>(null);
   const [loading, setLoading] = useState(false);
@@ -139,6 +205,48 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const callToneStopRef = useRef<(() => void) | null>(null);
   const incomingToneStopRef = useRef<(() => void) | null>(null);
   const callTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wakeLockRef = useRef<any>(null);
+  const incomingCallRef = useRef<IncomingCallState | null>(null);
+
+  useEffect(() => {
+    incomingCallRef.current = incomingCall;
+  }, [incomingCall]);
+
+  // Auto-register service worker & unlock audio on initial touch/gesture
+  useEffect(() => {
+    registerServiceWorker().catch(() => {});
+
+    const unlockHandler = () => {
+      soundEffects.unlockAudio();
+    };
+
+    window.addEventListener('click', unlockHandler, { passive: true });
+    window.addEventListener('touchstart', unlockHandler, { passive: true });
+    window.addEventListener('keydown', unlockHandler, { passive: true });
+
+    return () => {
+      window.removeEventListener('click', unlockHandler);
+      window.removeEventListener('touchstart', unlockHandler);
+      window.removeEventListener('keydown', unlockHandler);
+    };
+  }, []);
+
+  const requestWakeLock = async () => {
+    if (typeof navigator !== 'undefined' && 'wakeLock' in navigator) {
+      try {
+        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+      } catch {}
+    }
+  };
+
+  const releaseWakeLock = () => {
+    if (wakeLockRef.current) {
+      try {
+        wakeLockRef.current.release().catch(() => {});
+      } catch {}
+      wakeLockRef.current = null;
+    }
+  };
 
   // Live presence state from Firestore
   const [rawPresences, setRawPresences] = useState<Record<string, { isOnline: boolean; lastActive: string }>>({});
@@ -281,7 +389,28 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
     });
 
-    return result;
+    // SORTING ORDER (Strict requirement):
+    // 1. All currently ACTIVE (Online) users come FIRST.
+    // 2. Then, offline users sorted strictly chronologically by recency:
+    //    (2 min ago > 3 min ago > 4 min ago > hours ago > days ago > inactive)
+    return result.sort((a, b) => {
+      // 1. Active online users always on top
+      if (a.isOnline && !b.isOnline) return -1;
+      if (!a.isOnline && b.isOnline) return 1;
+
+      // 2. Strict chronological order of recency of lastActive timestamp
+      const timeA = a.lastActive ? new Date(a.lastActive).getTime() : 0;
+      const timeB = b.lastActive ? new Date(b.lastActive).getTime() : 0;
+
+      if (timeA !== timeB) {
+        return timeB - timeA; // Descending (more recent timestamp first)
+      }
+
+      // 3. Fallback: Admin priority then alphabetical
+      if (a.role === 'admin' && b.role !== 'admin') return -1;
+      if (b.role === 'admin' && a.role !== 'admin') return 1;
+      return a.name.localeCompare(b.name, 'bn');
+    });
   }, [members, rawPresences, myId, myName, isAdmin, currentMember]);
 
   const onlineCount = useMemo(() => {
@@ -400,12 +529,30 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (!incomingToneStopRef.current && soundEnabled) {
               incomingToneStopRef.current = soundEffects.startIncomingRingtone();
             }
+
+            // Trigger system Web Notification with action buttons & high priority for lock screen & background
+            triggerIncomingCallNotification({
+              callerName: incoming.callerName,
+              callerAvatar: incoming.callerAvatar,
+              callType: incoming.type,
+              callId: incoming.id,
+              isGroup: incoming.isGroup,
+            }).catch(() => {});
           } else {
+            if (incomingCall) {
+              cancelIncomingCallNotification(incomingCall.id).catch(() => {});
+            }
             setIncomingCall(null);
             if (incomingToneStopRef.current) {
               incomingToneStopRef.current();
               incomingToneStopRef.current = null;
             }
+            if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+              try {
+                navigator.vibrate(0);
+              } catch {}
+            }
+            releaseScreenWakeLock();
           }
 
           setRunningGroupCall(liveGroup);
@@ -424,6 +571,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Clean local call termination
   const endCallLocally = () => {
     webrtcManager.cleanup();
+    releaseWakeLock();
     if (callToneStopRef.current) {
       callToneStopRef.current();
       callToneStopRef.current = null;
@@ -431,6 +579,11 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (incomingToneStopRef.current) {
       incomingToneStopRef.current();
       incomingToneStopRef.current = null;
+    }
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      try {
+        navigator.vibrate(0);
+      } catch {}
     }
     if (callTimerRef.current) {
       clearInterval(callTimerRef.current);
@@ -572,6 +725,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       incomingToneStopRef.current = null;
     }
 
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      try {
+        navigator.vibrate(0);
+      } catch {}
+    }
+
     const currentName = myName;
     const currentAvatar = myAvatar;
 
@@ -619,6 +778,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setActiveCall(connectedCall);
     setIncomingCall(null);
+    requestWakeLock().catch(() => {});
 
     // Initialize WebRTC as Callee
     webrtcManager.startCallee(incomingCall.id, incomingCall.type, () => {}).catch((err) => {
@@ -646,6 +806,47 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }, 1000);
   };
 
+  // Listen for ServiceWorker answer/decline action messages
+  useEffect(() => {
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      const messageHandler = (event: MessageEvent) => {
+        if (event.data?.type === 'ANSWER_INCOMING_CALL') {
+          if (incomingCallRef.current || incomingCall) {
+            acceptIncomingCall();
+          }
+        } else if (event.data?.type === 'DECLINE_INCOMING_CALL') {
+          if (incomingCallRef.current || incomingCall) {
+            rejectIncomingCall();
+          }
+        }
+      };
+      navigator.serviceWorker.addEventListener('message', messageHandler);
+      return () => {
+        navigator.serviceWorker.removeEventListener('message', messageHandler);
+      };
+    }
+  }, [incomingCall]);
+
+  // Check URL parameters when window opens from lock-screen notification click
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const urlParams = new URLSearchParams(window.location.search);
+        const callAction = urlParams.get('callAction');
+        const callId = urlParams.get('callId');
+        if (callAction === 'answer') {
+          const currentInc = incomingCallRef.current || incomingCall;
+          if (currentInc && (!callId || callId === currentInc.id)) {
+            // Remove query params from url
+            const cleanUrl = window.location.pathname;
+            window.history.replaceState({}, document.title, cleanUrl);
+            acceptIncomingCall();
+          }
+        }
+      } catch {}
+    }
+  }, [incomingCall?.id]);
+
   // Reject / Decline incoming call
   const rejectIncomingCall = async () => {
     if (!incomingCall) return;
@@ -653,6 +854,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (incomingToneStopRef.current) {
       incomingToneStopRef.current();
       incomingToneStopRef.current = null;
+    }
+
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      try {
+        navigator.vibrate(0);
+      } catch {}
     }
 
     const callId = incomingCall.id;
@@ -868,35 +1075,27 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     soundEffects.playReceiveMessage();
                   }
 
-                  // Fire native mobile/browser push notification if granted
-                  if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
-                    try {
-                      const latestMsg = newIncoming[newIncoming.length - 1];
-                      const notifTitle = latestMsg.isDirect
-                        ? `${latestMsg.senderName} (সরাসরি বার্তা)`
-                        : `${latestMsg.senderName} • প্রবাসী মুক্ত ফান্ড`;
-                      const notifBody =
-                        latestMsg.type === 'voice'
-                          ? '🎤 একটি ভয়েস বার্তা পাঠিয়েছেন'
-                          : latestMsg.type === 'image'
-                          ? '📷 একটি ছবি পাঠিয়েছেন'
-                          : latestMsg.text || 'একটি নতুন বার্তা এসেছে';
+                  // Fire native mobile/browser push notification with Service Worker (works on lock screen & background)
+                  const latestMsg = newIncoming[newIncoming.length - 1];
+                  const notifTitle = latestMsg.isDirect
+                    ? `${latestMsg.senderName} (সরাসরি বার্তা)`
+                    : `${latestMsg.senderName} • প্রবাসী মুক্ত ফান্ড`;
+                  const notifBody =
+                    latestMsg.type === 'voice'
+                      ? '🎤 একটি ভয়েস বার্তা পাঠিয়েছেন'
+                      : latestMsg.type === 'image'
+                      ? '📷 একটি ছবি পাঠিয়েছেন'
+                      : latestMsg.text || 'একটি নতুন বার্তা এসেছে';
 
-                      const notif = new Notification(notifTitle, {
-                        body: notifBody,
-                        icon: latestMsg.senderAvatar || '/favicon.ico',
-                        badge: '/favicon.ico',
-                        tag: 'probashi-chat-msg',
-                      });
-
-                      notif.onclick = () => {
-                        window.focus();
-                        notif.close();
-                      };
-                    } catch (notifErr) {
-                      console.warn('Push notification error:', notifErr);
-                    }
-                  }
+                  sendPushNotification({
+                    title: notifTitle,
+                    body: notifBody,
+                    icon: latestMsg.senderAvatar || '/udbhob_logo.svg',
+                    badge: '/udbhob_logo.svg',
+                    tag: 'probashi-chat-msg',
+                    vibratePattern: [200, 100, 200],
+                    data: { url: '/', messageId: latestMsg.id },
+                  });
                 } else {
                   // When user is actively on chat screen, incoming messages stream smoothly without sound interruption
                 }
@@ -909,15 +1108,13 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
             prevMsgIdsRef.current = new Set(fundFiltered.map((m) => m.id));
             setMessages(fundFiltered);
-
-            localStorage.setItem(`probashi_chat_msgs_${activeFundId || 'all'}`, JSON.stringify(fundFiltered));
+            saveMessagesOffline(fundFiltered, activeFundId || undefined);
           } else {
-            setMessages([]);
-            localStorage.removeItem(`probashi_chat_msgs_${activeFundId || 'all'}`);
+            // If snapshot is empty (e.g. during initial network disconnect), keep cached offline messages!
           }
         },
         (err) => {
-          console.warn('Firestore chat snapshot error:', err);
+          console.warn('Firestore chat snapshot error (relying on offline cache):', err);
         }
       );
 
@@ -968,18 +1165,23 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setReplyingTo(null);
 
-    // Optimistic local update
+    // Optimistic local and offline IndexedDB update
     setMessages((prev) => {
       const updated = [...prev, newMessage];
-      localStorage.setItem(`probashi_chat_msgs_${activeFundId || 'all'}`, JSON.stringify(updated));
+      saveMessagesOffline(updated, activeFundId || undefined);
       return updated;
     });
 
-    // Firestore persistence
+    // Firestore persistence with offline fallback queue
     try {
-      await setDoc(doc(db, 'chat_messages', newMessage.id), cleanForFirestore(newMessage));
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        await queueOfflineMessage(newMessage);
+      } else {
+        await setDoc(doc(db, 'chat_messages', newMessage.id), cleanForFirestore(newMessage));
+      }
     } catch (err) {
-      console.warn('Could not save message to Firestore:', err);
+      console.warn('Could not save message to Firestore, queued for sync:', err);
+      await queueOfflineMessage(newMessage);
     }
   };
 
@@ -1018,14 +1220,19 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setMessages((prev) => {
       const updated = [...prev, newMessage];
-      localStorage.setItem(`probashi_chat_msgs_${activeFundId || 'all'}`, JSON.stringify(updated));
+      saveMessagesOffline(updated, activeFundId || undefined);
       return updated;
     });
 
     try {
-      await setDoc(doc(db, 'chat_messages', newMessage.id), cleanForFirestore(newMessage));
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        await queueOfflineMessage(newMessage);
+      } else {
+        await setDoc(doc(db, 'chat_messages', newMessage.id), cleanForFirestore(newMessage));
+      }
     } catch (err) {
-      console.warn('Could not save voice note to Firestore:', err);
+      console.warn('Could not save voice note to Firestore, queued for sync:', err);
+      await queueOfflineMessage(newMessage);
     }
   };
 
@@ -1063,14 +1270,19 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setMessages((prev) => {
       const updated = [...prev, newMessage];
-      localStorage.setItem(`probashi_chat_msgs_${activeFundId || 'all'}`, JSON.stringify(updated));
+      saveMessagesOffline(updated, activeFundId || undefined);
       return updated;
     });
 
     try {
-      await setDoc(doc(db, 'chat_messages', newMessage.id), cleanForFirestore(newMessage));
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        await queueOfflineMessage(newMessage);
+      } else {
+        await setDoc(doc(db, 'chat_messages', newMessage.id), cleanForFirestore(newMessage));
+      }
     } catch (err) {
-      console.warn('Could not save image message to Firestore:', err);
+      console.warn('Could not save image message to Firestore, queued for sync:', err);
+      await queueOfflineMessage(newMessage);
     }
   };
 

@@ -10,6 +10,7 @@ import {
   VolumeX,
   Camera,
   Signal,
+  User,
 } from 'lucide-react';
 import { useChat } from '../../context/ChatContext';
 import { webrtcManager } from '../../utils/webrtcManager';
@@ -23,54 +24,55 @@ export const CallModal: React.FC = () => {
 
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [hasRemoteVideo, setHasRemoteVideo] = useState<boolean>(false);
+  const [hasLocalVideo, setHasLocalVideo] = useState<boolean>(false);
   const [voiceActivity, setVoiceActivity] = useState<number>(0);
 
-  // Sync streams with webrtcManager cleanly without polling intervals
+  // Sync streams with webrtcManager
   useEffect(() => {
     if (!activeCall) return;
 
+    // Helper to evaluate stream tracks
+    const syncLocal = (stream: MediaStream | null) => {
+      setLocalStream(stream);
+      if (stream) {
+        const vTracks = stream.getVideoTracks();
+        const hasV = vTracks.some((t) => t.readyState === 'live' && t.enabled);
+        setHasLocalVideo(hasV);
+      } else {
+        setHasLocalVideo(false);
+      }
+    };
+
+    const syncRemote = (stream: MediaStream | null) => {
+      setRemoteStream(stream);
+      if (stream) {
+        const vTracks = stream.getVideoTracks();
+        const hasV = vTracks.some((t) => t.readyState === 'live' && t.enabled);
+        setHasRemoteVideo(hasV);
+      } else {
+        setHasRemoteVideo(false);
+      }
+    };
+
     // Attach local stream listener
     webrtcManager.setOnLocalStream((stream) => {
-      setLocalStream(stream);
-      if (localVideoRef.current && localVideoRef.current.srcObject !== stream) {
-        localVideoRef.current.srcObject = stream;
-      }
+      syncLocal(stream);
     });
 
     // Attach remote stream listener
     webrtcManager.setOnRemoteStream((stream) => {
-      setRemoteStream(stream);
-      if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== stream) {
-        remoteVideoRef.current.srcObject = stream;
-      }
-      if (remoteAudioRef.current && remoteAudioRef.current.srcObject !== stream) {
-        remoteAudioRef.current.srcObject = stream;
-        remoteAudioRef.current.play().catch(() => {});
-      }
+      syncRemote(stream);
     });
 
     // Check existing streams
     const curLocal = webrtcManager.getLocalStream();
-    if (curLocal) {
-      setLocalStream(curLocal);
-      if (localVideoRef.current && localVideoRef.current.srcObject !== curLocal) {
-        localVideoRef.current.srcObject = curLocal;
-      }
-    }
+    if (curLocal) syncLocal(curLocal);
 
     const curRemote = webrtcManager.getRemoteStream();
-    if (curRemote && curRemote.getTracks().length > 0) {
-      setRemoteStream(curRemote);
-      if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== curRemote) {
-        remoteVideoRef.current.srcObject = curRemote;
-      }
-      if (remoteAudioRef.current && remoteAudioRef.current.srcObject !== curRemote) {
-        remoteAudioRef.current.srcObject = curRemote;
-        remoteAudioRef.current.play().catch(() => {});
-      }
-    }
+    if (curRemote) syncRemote(curRemote);
 
-    // Set throttled real-time voice meter
+    // Audio meter listener
     webrtcManager.setAudioMeterListener((level) => {
       setVoiceActivity(level);
     });
@@ -82,21 +84,76 @@ export const CallModal: React.FC = () => {
     };
   }, [activeCall?.id]);
 
-  // Handle video element bindings safely
+  // Track listeners on local stream
   useEffect(() => {
-    if (localVideoRef.current && localStream && localVideoRef.current.srcObject !== localStream) {
-      localVideoRef.current.srcObject = localStream;
+    if (!localStream) {
+      setHasLocalVideo(false);
+      return;
     }
-  }, [localStream]);
 
+    const checkLocal = () => {
+      const vTracks = localStream.getVideoTracks();
+      setHasLocalVideo(vTracks.some((t) => t.readyState === 'live' && t.enabled));
+    };
+
+    localStream.onaddtrack = checkLocal;
+    localStream.onremovetrack = checkLocal;
+    localStream.getVideoTracks().forEach((track) => {
+      track.onmute = checkLocal;
+      track.onunmute = checkLocal;
+      track.onended = checkLocal;
+    });
+
+    checkLocal();
+
+    if (localVideoRef.current && localVideoRef.current.srcObject !== localStream) {
+      localVideoRef.current.srcObject = localStream;
+      localVideoRef.current.play().catch(() => {});
+    }
+
+    return () => {
+      localStream.onaddtrack = null;
+      localStream.onremovetrack = null;
+    };
+  }, [localStream, activeCall?.isVideoOff]);
+
+  // Track listeners on remote stream & attach to video and audio
   useEffect(() => {
-    if (remoteVideoRef.current && remoteStream && remoteVideoRef.current.srcObject !== remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
+    if (!remoteStream) {
+      setHasRemoteVideo(false);
+      return;
     }
-    if (remoteAudioRef.current && remoteStream && remoteAudioRef.current.srcObject !== remoteStream) {
-      remoteAudioRef.current.srcObject = remoteStream;
-      remoteAudioRef.current.play().catch(() => {});
-    }
+
+    const checkRemote = () => {
+      const vTracks = remoteStream.getVideoTracks();
+      const hasLiveVideo = vTracks.some((t) => t.readyState === 'live' && t.enabled);
+      setHasRemoteVideo(hasLiveVideo);
+
+      if (remoteVideoRef.current && remoteVideoRef.current.srcObject !== remoteStream) {
+        remoteVideoRef.current.srcObject = remoteStream;
+      }
+      remoteVideoRef.current?.play().catch(() => {});
+
+      if (remoteAudioRef.current && remoteAudioRef.current.srcObject !== remoteStream) {
+        remoteAudioRef.current.srcObject = remoteStream;
+      }
+      remoteAudioRef.current?.play().catch(() => {});
+    };
+
+    remoteStream.onaddtrack = checkRemote;
+    remoteStream.onremovetrack = checkRemote;
+    remoteStream.getVideoTracks().forEach((track) => {
+      track.onmute = checkRemote;
+      track.onunmute = checkRemote;
+      track.onended = checkRemote;
+    });
+
+    checkRemote();
+
+    return () => {
+      remoteStream.onaddtrack = null;
+      remoteStream.onremovetrack = null;
+    };
   }, [remoteStream]);
 
   if (!activeCall) return null;
@@ -106,9 +163,12 @@ export const CallModal: React.FC = () => {
   const seconds = activeCall.durationSeconds % 60;
   const timeFormatted = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 
+  const isSelfVideoActive = !activeCall.isVideoOff && hasLocalVideo;
+  const isRemoteVideoActive = hasRemoteVideo && isConnected;
+
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex flex-col justify-between text-white p-4 sm:p-6 select-none animate-fadeIn">
-      {/* Hidden audio tag to ensure incoming audio plays smoothly */}
+      {/* Hidden audio tag to ensure remote audio playback */}
       <audio ref={remoteAudioRef} autoPlay playsInline />
 
       {/* Top Header */}
@@ -141,7 +201,7 @@ export const CallModal: React.FC = () => {
           </div>
         </div>
 
-        {/* Mute/Status Badges */}
+        {/* Action / Flip Camera button */}
         <div className="flex items-center space-x-2">
           {activeCall.isMuted && (
             <span className="px-2.5 py-1 rounded-xl bg-rose-500/30 border border-rose-500/50 text-rose-300 text-xs font-semibold flex items-center gap-1">
@@ -163,45 +223,46 @@ export const CallModal: React.FC = () => {
       {/* Main Call View Canvas */}
       <div className="max-w-4xl w-full mx-auto flex-1 my-4 sm:my-6 flex items-center justify-center relative overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/60 shadow-2xl">
         {activeCall.type === 'video' && !activeCall.isVideoOff ? (
-          // Video Mode: Grid of participants + Local camera + Remote camera
+          // Video Mode: Grid of Self Video + Remote Video Tile
           <div className="w-full h-full p-2 sm:p-4 grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 relative">
             {/* 1. Self Video Tile */}
-            <div className="relative rounded-2xl overflow-hidden bg-slate-950 border border-emerald-500/30 flex items-center justify-center group shadow-lg min-h-[180px]">
-              {localStream && !activeCall.isVideoOff ? (
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="w-full h-full object-cover transform -scale-x-100"
-                />
-              ) : (
-                <div className="flex flex-col items-center justify-center p-6 text-center">
+            <div className="relative rounded-2xl overflow-hidden bg-slate-950 border border-emerald-500/30 flex items-center justify-center shadow-lg min-h-[200px]">
+              <video
+                ref={localVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full h-full object-cover transform -scale-x-100 transition-opacity duration-300 ${isSelfVideoActive ? 'opacity-100' : 'opacity-0 absolute inset-0 pointer-events-none'}`}
+              />
+
+              {!isSelfVideoActive && (
+                <div className="flex flex-col items-center justify-center p-6 text-center z-10">
                   <div className="w-20 h-20 rounded-full bg-gradient-to-br from-emerald-500 to-teal-700 flex items-center justify-center text-2xl font-black text-white shadow-xl mb-3">
                     আপনি
                   </div>
                   <span className="text-sm font-bold text-white">আপনার ক্যামেরা</span>
-                  <span className="text-2xs text-emerald-400 mt-0.5">ফিড সক্রিয়</span>
+                  <span className="text-2xs text-emerald-400 mt-0.5">ক্যামেরা চালু করা হচ্ছে...</span>
                 </div>
               )}
-              <div className="absolute bottom-2 left-2 px-2.5 py-1 rounded-lg bg-black/60 backdrop-blur-md text-xs font-semibold text-white flex items-center gap-1.5">
+
+              <div className="absolute bottom-2 left-2 px-2.5 py-1 rounded-lg bg-black/70 backdrop-blur-md text-xs font-semibold text-white flex items-center gap-1.5 z-20">
                 <span className="w-2 h-2 rounded-full bg-emerald-400" />
                 <span>আপনি</span>
                 {activeCall.isMuted && <MicOff className="w-3 h-3 text-rose-400" />}
               </div>
             </div>
 
-            {/* 2. Remote Participant / Remote Video Tile */}
-            <div className="relative rounded-2xl overflow-hidden bg-gradient-to-b from-slate-800 to-slate-950 border border-slate-800 flex items-center justify-center shadow-lg min-h-[180px]">
-              {remoteStream && isConnected ? (
-                <video
-                  ref={remoteVideoRef}
-                  autoPlay
-                  playsInline
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <div className="flex flex-col items-center justify-center p-6 text-center">
+            {/* 2. Remote Participant Video Tile */}
+            <div className="relative rounded-2xl overflow-hidden bg-gradient-to-b from-slate-800 to-slate-950 border border-slate-800 flex items-center justify-center shadow-lg min-h-[200px]">
+              <video
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                className={`w-full h-full object-cover transition-opacity duration-300 ${isRemoteVideoActive ? 'opacity-100' : 'opacity-0 absolute inset-0 pointer-events-none'}`}
+              />
+
+              {!isRemoteVideoActive && (
+                <div className="flex flex-col items-center justify-center p-6 text-center z-10">
                   <div className="w-20 h-20 rounded-full bg-gradient-to-br from-slate-700 to-slate-800 border-2 border-emerald-500/40 flex items-center justify-center text-2xl font-bold text-white shadow-xl mb-2 relative overflow-hidden">
                     {activeCall.targetUser?.avatar ? (
                       <img
@@ -220,7 +281,7 @@ export const CallModal: React.FC = () => {
                     {activeCall.targetUser?.name || 'প্রবাসী সদস্য'}
                   </span>
                   <span className="text-2xs text-slate-400 mt-0.5">
-                    {isConnected ? 'ভিডিও যুক্ত হচ্ছে...' : 'রিং হচ্ছে...'}
+                    {isConnected ? 'ভিডিও ফিড সংযুক্ত হচ্ছে...' : 'রিং হচ্ছে...'}
                   </span>
 
                   {/* Audio wave indicator */}
@@ -241,7 +302,7 @@ export const CallModal: React.FC = () => {
                 </div>
               )}
 
-              <div className="absolute bottom-2 left-2 px-2.5 py-1 rounded-lg bg-black/60 backdrop-blur-md text-xs font-semibold text-slate-200 flex items-center gap-1.5">
+              <div className="absolute bottom-2 left-2 px-2.5 py-1 rounded-lg bg-black/70 backdrop-blur-md text-xs font-semibold text-slate-200 flex items-center gap-1.5 z-20">
                 <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`} />
                 <span>{activeCall.targetUser?.name || 'সদস্য'}</span>
               </div>

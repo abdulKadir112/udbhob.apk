@@ -37,6 +37,9 @@ import {
   ArrowUpCircle,
   MessageSquare,
   UserCheck,
+  Smartphone,
+  Download,
+  WifiOff,
 } from 'lucide-react';
 import { useChat } from '../../context/ChatContext';
 import { useAuth } from '../../context/AuthContext';
@@ -45,6 +48,14 @@ import { ChatMessage, CallType, UserPresence, UserRole } from '../../types';
 import { soundEffects } from '../../utils/audioFeedback';
 import { ActiveMembersDrawer } from './ActiveMembersDrawer';
 import { SwipeableMessageItem } from './SwipeableMessageItem';
+import {
+  requestNotificationPermission,
+  sendTestPushNotification,
+  sendTestIncomingCallAlert,
+  getNotificationPermission,
+  requestAllCorePermissions,
+} from '../../utils/pushNotification';
+import { PwaInstallModal } from '../PwaInstallModal';
 
 interface WhatsAppChatViewProps {
   onNavigateToFund?: () => void;
@@ -124,10 +135,13 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
   const [isRecording, setIsRecording] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [isSlideCancelled, setIsSlideCancelled] = useState(false);
+  const [slideOffset, setSlideOffset] = useState(0);
+  const [showMicHoldHint, setShowMicHoldHint] = useState(false);
   const recordingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const touchStartXRef = useRef<number>(0);
+  const recordingStartTimeRef = useRef<number>(0);
   const isHoldPressingRef = useRef<boolean>(false);
 
   // Playing voice notes state
@@ -135,10 +149,103 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
   const [voiceProgress, setVoiceProgress] = useState<number>(0);
   const voiceStopFnRef = useRef<(() => void) | null>(null);
 
+  // Notification & Lock Screen status state
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission>(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      return Notification.permission;
+    }
+    return 'default';
+  });
+  const [isNotifBannerDismissed, setIsNotifBannerDismissed] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('probashi_permissions_prompted') === 'true';
+    }
+    return false;
+  });
+  const [isTestingNotif, setIsTestingNotif] = useState(false);
+
+  // PWA Install state
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isAppInstalled, setIsAppInstalled] = useState(false);
+  const [isPwaInstallModalOpen, setIsPwaInstallModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      setNotifPermission(Notification.permission);
+    }
+
+    const handleBeforeInstallPrompt = (e: Event) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+
+    if (
+      typeof window !== 'undefined' &&
+      (window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone)
+    ) {
+      setIsAppInstalled(true);
+    }
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    };
+  }, []);
+
+  const handleInstallApp = async () => {
+    if (deferredPrompt) {
+      try {
+        deferredPrompt.prompt();
+        const { outcome } = await deferredPrompt.userChoice;
+        if (outcome === 'accepted') {
+          setIsAppInstalled(true);
+          setDeferredPrompt(null);
+        }
+      } catch (err) {
+        setIsPwaInstallModalOpen(true);
+      }
+    } else {
+      setIsPwaInstallModalOpen(true);
+    }
+  };
+
+  const handleEnableNotifications = async () => {
+    setIsTestingNotif(true);
+    try {
+      // Simultaneously requests Notification, Microphone, and Camera permissions together!
+      const result = await requestAllCorePermissions();
+      setNotifPermission(result.notification);
+      if (result.notification === 'granted') {
+        await sendTestPushNotification(isBn);
+      }
+    } catch (e) {
+      console.warn('Unified permission request error:', e);
+    } finally {
+      setIsTestingNotif(false);
+    }
+  };
+
   // File and photo upload ref
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [customImageUrl, setCustomImageUrl] = useState('');
   const [customImageCaption, setCustomImageCaption] = useState('');
+  const [isOnline, setIsOnline] = useState<boolean>(() =>
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
+
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   const myId = userSession?.uid || currentMember?.id || (isAdmin ? 'admin_master_001' : '');
   const isBn = language === 'bn';
@@ -266,11 +373,21 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
   };
 
   // Voice recording engine (MediaRecorder real microphone audio capture)
-  const startRecordingAudio = async () => {
+  const startRecordingAudio = async (startX: number = 0) => {
+    recordingStartTimeRef.current = Date.now();
+    touchStartXRef.current = startX;
+    isHoldPressingRef.current = true;
+    setSlideOffset(0);
+    setIsSlideCancelled(false);
     setIsRecording(true);
     setRecordingSeconds(0);
-    setIsSlideCancelled(false);
     audioChunksRef.current = [];
+
+    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+      try {
+        navigator.vibrate(35);
+      } catch {}
+    }
 
     if (soundEnabled) {
       soundEffects.playRecordStart();
@@ -284,7 +401,7 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
     try {
       if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        
+
         let mimeType = 'audio/webm';
         if (typeof MediaRecorder !== 'undefined' && typeof MediaRecorder.isTypeSupported === 'function') {
           if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
@@ -317,6 +434,7 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
   const cancelRecordingAudio = () => {
     setIsRecording(false);
     setIsSlideCancelled(false);
+    setSlideOffset(0);
     isHoldPressingRef.current = false;
 
     if (recordingTimerRef.current) {
@@ -339,11 +457,12 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
   };
 
   const finishRecordingAudio = async () => {
-    if (!isRecording) return;
+    if (!isRecording && !isHoldPressingRef.current) return;
     const duration = Math.max(1, recordingSeconds);
 
     setIsRecording(false);
     setIsSlideCancelled(false);
+    setSlideOffset(0);
     isHoldPressingRef.current = false;
 
     if (recordingTimerRef.current) {
@@ -365,18 +484,27 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
           const reader = new FileReader();
           reader.onloadend = () => {
             const dataUrl = reader.result as string;
-            const directTarget = selectedChatTab === 'direct' && selectedDirectUser ? { recipientId: selectedDirectUser.id, recipientName: selectedDirectUser.name } : undefined;
+            const directTarget =
+              selectedChatTab === 'direct' && selectedDirectUser
+                ? { recipientId: selectedDirectUser.id, recipientName: selectedDirectUser.name }
+                : undefined;
             sendVoiceMessage(duration, dataUrl, directTarget);
           };
           reader.readAsDataURL(audioBlob);
         } catch {
-          const directTarget = selectedChatTab === 'direct' && selectedDirectUser ? { recipientId: selectedDirectUser.id, recipientName: selectedDirectUser.name } : undefined;
+          const directTarget =
+            selectedChatTab === 'direct' && selectedDirectUser
+              ? { recipientId: selectedDirectUser.id, recipientName: selectedDirectUser.name }
+              : undefined;
           sendVoiceMessage(duration, undefined, directTarget);
         }
       };
       recorder.stop();
     } else {
-      const directTarget = selectedChatTab === 'direct' && selectedDirectUser ? { recipientId: selectedDirectUser.id, recipientName: selectedDirectUser.name } : undefined;
+      const directTarget =
+        selectedChatTab === 'direct' && selectedDirectUser
+          ? { recipientId: selectedDirectUser.id, recipientName: selectedDirectUser.name }
+          : undefined;
       sendVoiceMessage(duration, undefined, directTarget);
     }
   };
@@ -418,7 +546,10 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
   // Send text message handler
   const handleSend = () => {
     if (!inputText.trim()) return;
-    const directTarget = selectedChatTab === 'direct' && selectedDirectUser ? { recipientId: selectedDirectUser.id, recipientName: selectedDirectUser.name } : undefined;
+    const directTarget =
+      selectedChatTab === 'direct' && selectedDirectUser
+        ? { recipientId: selectedDirectUser.id, recipientName: selectedDirectUser.name }
+        : undefined;
     sendMessage(
       inputText.trim(),
       replyingTo ? { id: replyingTo.id, senderName: replyingTo.senderName, text: replyingTo.text || '' } : undefined,
@@ -435,54 +566,106 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
     }
   };
 
-  // Voice Hold-to-Record & Release-to-Send handlers
-  const handleMicMouseDown = (e: React.MouseEvent) => {
-    e.preventDefault();
-    isHoldPressingRef.current = true;
-    startRecordingAudio();
-  };
+  // Handle release of hold across the window/document
+  const handleReleaseHold = () => {
+    if (!isHoldPressingRef.current && !isRecording) return;
+    isHoldPressingRef.current = false;
 
-  const handleMicMouseUp = (e: React.MouseEvent) => {
-    e.preventDefault();
-    if (isHoldPressingRef.current) {
-      isHoldPressingRef.current = false;
+    const elapsedMs = Date.now() - (recordingStartTimeRef.current || 0);
+
+    if (isSlideCancelled) {
+      cancelRecordingAudio();
+    } else if (elapsedMs < 350) {
+      // Tapped too briefly - cancel and inform user to hold
+      cancelRecordingAudio();
+      setShowMicHoldHint(true);
+      setTimeout(() => setShowMicHoldHint(false), 2400);
+    } else {
+      // Held to record - release to send automatically!
       finishRecordingAudio();
+      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+        try {
+          navigator.vibrate(20);
+        } catch {}
+      }
     }
   };
 
-  const handleMicMouseLeave = () => {
-    // If mouse left the button while holding without explicit slide cancel, finish and send
-    if (isHoldPressingRef.current) {
-      isHoldPressingRef.current = false;
-      finishRecordingAudio();
-    }
-  };
+  const handlePointerDragMove = (clientX: number) => {
+    if (!isHoldPressingRef.current || !touchStartXRef.current) return;
+    const diff = touchStartXRef.current - clientX;
+    const offset = Math.max(0, Math.min(diff, 90));
+    setSlideOffset(offset);
 
-  const handleMicTouchStart = (e: React.TouchEvent) => {
-    touchStartXRef.current = e.touches[0].clientX;
-    isHoldPressingRef.current = true;
-    startRecordingAudio();
-  };
-
-  const handleMicTouchMove = (e: React.TouchEvent) => {
-    if (!isRecording) return;
-    const currentX = e.touches[0].clientX;
-    const diff = touchStartXRef.current - currentX;
-    if (diff > 70) {
+    if (diff > 55) {
       setIsSlideCancelled(true);
     } else {
       setIsSlideCancelled(false);
     }
   };
 
+  // Window-level safety listeners to ensure 100% reliable release detection on mobile/PWA/web
+  useEffect(() => {
+    if (!isRecording) return;
+
+    const onWindowPointerMove = (e: PointerEvent) => {
+      handlePointerDragMove(e.clientX);
+    };
+
+    const onWindowTouchMove = (e: TouchEvent) => {
+      if (e.touches.length > 0) {
+        handlePointerDragMove(e.touches[0].clientX);
+      }
+    };
+
+    const onWindowPointerUp = () => {
+      handleReleaseHold();
+    };
+
+    const onWindowTouchEnd = () => {
+      handleReleaseHold();
+    };
+
+    window.addEventListener('pointermove', onWindowPointerMove);
+    window.addEventListener('touchmove', onWindowTouchMove, { passive: true });
+    window.addEventListener('pointerup', onWindowPointerUp);
+    window.addEventListener('touchend', onWindowTouchEnd);
+    window.addEventListener('pointercancel', onWindowPointerUp);
+    window.addEventListener('touchcancel', onWindowTouchEnd);
+
+    return () => {
+      window.removeEventListener('pointermove', onWindowPointerMove);
+      window.removeEventListener('touchmove', onWindowTouchMove);
+      window.removeEventListener('pointerup', onWindowPointerUp);
+      window.removeEventListener('touchend', onWindowTouchEnd);
+      window.removeEventListener('pointercancel', onWindowPointerUp);
+      window.removeEventListener('touchcancel', onWindowTouchEnd);
+    };
+  }, [isRecording, isSlideCancelled]);
+
+  // Voice Hold-to-Record & Release-to-Send handlers on the Mic button
+  const handleMicPointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch {}
+    startRecordingAudio(e.clientX);
+  };
+
+  const handleMicTouchStart = (e: React.TouchEvent) => {
+    const clientX = e.touches[0]?.clientX || 0;
+    startRecordingAudio(clientX);
+  };
+
+  const handleMicTouchMove = (e: React.TouchEvent) => {
+    if (e.touches[0]) {
+      handlePointerDragMove(e.touches[0].clientX);
+    }
+  };
+
   const handleMicTouchEnd = (e: React.TouchEvent) => {
     e.preventDefault();
-    if (isSlideCancelled) {
-      cancelRecordingAudio();
-    } else if (isHoldPressingRef.current || isRecording) {
-      finishRecordingAudio();
-    }
-    isHoldPressingRef.current = false;
+    handleReleaseHold();
   };
 
   // Find direct user live presence
@@ -492,7 +675,7 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
   }, [selectedDirectUser, userPresences]);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-64px)] sm:h-[calc(100vh-72px)] max-w-5xl mx-auto w-full bg-[#efeae2] shadow-xl overflow-hidden relative border-x border-slate-200">
+    <div className="flex flex-col h-full w-full max-w-5xl mx-auto bg-[#efeae2] shadow-xl overflow-hidden relative border-x border-slate-200">
       {/* 1. TOP HEADER (WHATSAPP COMMUNITY BRANDING) */}
       <div className="bg-[#005c4b] text-white px-3 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between shadow-md z-30 shrink-0 select-none">
         {/* Left: Group/Direct User Avatar & Info */}
@@ -613,6 +796,23 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
             <Search className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
 
+          {/* Install App Button (PWA 1-Click Install to Phone Home Screen) */}
+          <button
+            id="btn-install-pwa-header"
+            onClick={handleInstallApp}
+            className={`flex items-center space-x-1 px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-full font-bold text-[10.5px] sm:text-xs shadow-xs transition-all cursor-pointer shrink-0 ${
+              isAppInstalled
+                ? 'bg-emerald-800/90 text-emerald-200 hover:bg-emerald-700'
+                : 'bg-emerald-400 hover:bg-emerald-300 text-emerald-950 animate-pulse ring-1 ring-white/50'
+            }`}
+            title={isBn ? 'ফোনের হোম স্ক্রিনে অ্যাপ ইনস্টল করুন' : 'Install PWA App to Home Screen'}
+          >
+            <Smartphone className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+            <span className="hidden xs:inline">
+              {isAppInstalled ? (isBn ? 'ইনস্টলড ✓' : 'Installed ✓') : (isBn ? 'ইনস্টল অ্যাপ' : 'Install App')}
+            </span>
+          </button>
+
           {/* Switch to Fund Tab Button */}
           {onNavigateToFund && (
             <button
@@ -721,6 +921,40 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
                   </span>
                 </button>
 
+                {/* Install PWA App to Home Screen */}
+                <button
+                  onClick={() => {
+                    setIsProfileMenuOpen(false);
+                    handleInstallApp();
+                  }}
+                  className="w-full text-left px-3 py-2 text-[11px] text-emerald-800 hover:bg-emerald-50 flex items-center justify-between border-t border-slate-100 font-semibold"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <Smartphone className="w-3.5 h-3.5 text-emerald-600" />
+                    <span>{isBn ? 'ফোনে অ্যাপ ইনস্টল করুন' : 'Install App to Phone'}</span>
+                  </span>
+                  <span className={`text-[10px] font-bold ${isAppInstalled ? 'text-emerald-700' : 'text-amber-600'}`}>
+                    {isAppInstalled ? (isBn ? 'ইনস্টলড ✓' : 'Installed ✓') : (isBn ? 'ইনস্টল' : 'Install')}
+                  </span>
+                </button>
+
+                {/* Lock-Screen Notification Prompt / Test */}
+                <button
+                  onClick={() => {
+                    setIsProfileMenuOpen(false);
+                    handleEnableNotifications();
+                  }}
+                  className="w-full text-left px-3 py-2 text-[11px] text-slate-700 hover:bg-slate-50 flex items-center justify-between border-t border-slate-100"
+                >
+                  <span className="flex items-center gap-1.5">
+                    <Bell className="w-3.5 h-3.5 text-amber-500" />
+                    <span>{isBn ? 'নোটিফিকেশন, মাইক ও ক্যামেরা' : 'Alerts, Mic & Camera'}</span>
+                  </span>
+                  <span className={`text-[10px] font-bold ${notifPermission === 'granted' ? 'text-emerald-600' : 'text-amber-600'}`}>
+                    {notifPermission === 'granted' ? (isBn ? 'সক্রিয় ✓' : 'Active ✓') : (isBn ? 'অনুমতি দিন' : 'Enable')}
+                  </span>
+                </button>
+
                 {onOpenAuthModal && (
                   <button
                     onClick={() => {
@@ -786,10 +1020,53 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
           className="px-2.5 py-1 rounded-full bg-emerald-800/80 hover:bg-emerald-700 text-emerald-100 text-2xs sm:text-xs font-medium flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
           title="সদস্য তালিকা ও সক্রিয় স্ট্যাটাস দেখুন"
         >
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span>অনলাইন ({onlineCount})</span>
+          <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+          <span>{isOnline ? `অনলাইন (${onlineCount})` : 'অফলাইন'}</span>
         </button>
       </div>
+
+      {/* Offline PWA indicator banner */}
+      {!isOnline && (
+        <div className="bg-amber-700 text-amber-50 text-[11px] px-3 py-1.5 flex items-center justify-between font-medium shadow-xs z-20 shrink-0 border-b border-amber-800">
+          <div className="flex items-center space-x-1.5">
+            <WifiOff className="w-3.5 h-3.5 text-amber-200 animate-pulse shrink-0" />
+            <span>
+              {isBn
+                ? 'অফলাইন মোড সক্রিয় — পূর্বের সব এসএমএস, ভয়েস ও ছবি ব্রাউজ করা যাবে'
+                : 'Offline Mode Active — All loaded messages, voice notes & images are cached'}
+            </span>
+          </div>
+          <span className="text-[9.5px] bg-amber-900/80 px-2 py-0.5 rounded-full font-semibold shrink-0">
+            PWA অফলাইন
+          </span>
+        </div>
+      )}
+
+      {/* Lock-Screen Calls & Notification Permission Activation Banner */}
+      {notifPermission !== 'granted' && (
+        <div className="bg-gradient-to-r from-emerald-800 to-teal-800 text-emerald-50 text-[11.5px] px-3 py-1.5 flex items-center justify-between font-medium shadow-xs z-20 shrink-0 border-b border-emerald-900">
+          <div className="flex items-center space-x-1.5 truncate mr-2">
+            <Bell className="w-3.5 h-3.5 text-amber-300 animate-bounce shrink-0" />
+            <span className="truncate">
+              {isBn
+                ? 'ফোন লক থাকলেও কল ও এসএমএস পেতে নোটিফিকেশন চালু করুন'
+                : 'Enable notifications to receive calls & messages when phone is locked'}
+            </span>
+          </div>
+          <button
+            onClick={handleEnableNotifications}
+            disabled={isTestingNotif}
+            className="px-2.5 py-0.5 rounded-full bg-emerald-400 text-emerald-950 hover:bg-emerald-300 text-[10px] font-bold shrink-0 transition-colors shadow-xs cursor-pointer flex items-center gap-1"
+          >
+            {isTestingNotif ? (
+              <span className="w-3 h-3 border border-emerald-950 border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <Sparkles className="w-2.5 h-2.5" />
+            )}
+            <span>{isBn ? 'চালু করুন' : 'Enable'}</span>
+          </button>
+        </div>
+      )}
 
       {/* 1-to-1 Direct Chat Selection Bar (When in Direct mode) */}
       {selectedChatTab === 'direct' && (
@@ -927,6 +1204,49 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
               আনপিন
             </button>
           )}
+        </div>
+      )}
+
+      {/* 2.1 Background & Lock-Screen Call Notification, Mic & Camera Setup Banner */}
+      {notifPermission !== 'granted' && !isNotifBannerDismissed && (
+        <div className="bg-gradient-to-r from-amber-600 via-emerald-700 to-teal-800 text-white px-3 py-2 shadow-sm border-b border-emerald-600 flex items-center justify-between z-10 shrink-0 animate-fadeIn">
+          <div className="flex items-center space-x-2 overflow-hidden mr-2">
+            <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center shrink-0 animate-pulse">
+              <Bell className="w-3.5 h-3.5 text-white" />
+            </div>
+            <div className="text-[11px] leading-tight">
+              <span className="font-bold block text-emerald-100">
+                {isBn ? 'নোটিফিকেশন, মাইক ও ক্যামেরা পারমিশন:' : 'Notifications, Mic & Camera Permissions:'}
+              </span>
+              <span className="text-white/90 text-[10px]">
+                {isBn
+                  ? 'ফোন লকে কল পাওয়া, ভয়েস মেসেজ ও ভিডিও কলের জন্য এক ক্লিকেই সব অনুমোদন দিন।'
+                  : 'Enable lock-screen calls, voice notes & video chat in one seamless click.'}
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center space-x-1.5 shrink-0">
+            <button
+              id="btn-enable-lockscreen-alerts"
+              onClick={handleEnableNotifications}
+              disabled={isTestingNotif}
+              className="px-2.5 py-1 rounded-full bg-white text-emerald-950 font-bold text-[10px] sm:text-xs shadow hover:bg-emerald-50 active:scale-95 transition-all cursor-pointer flex items-center gap-1"
+            >
+              {isTestingNotif ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <Check className="w-3 h-3 text-emerald-600 stroke-[3]" />
+              )}
+              <span>{isBn ? 'সব এলাউ করুন (Allow All)' : 'Allow All'}</span>
+            </button>
+            <button
+              onClick={() => setIsNotifBannerDismissed(true)}
+              className="p-1 text-white/70 hover:text-white rounded-full hover:bg-white/10"
+              title="বন্ধ করুন"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
       )}
 
@@ -1131,117 +1451,132 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
       )}
 
       {/* 7. BOTTOM MESSAGE INPUT & VOICE RECORDING CONTROLS */}
-      <div className="bg-[#f0f2f5] px-2.5 sm:px-4 py-2.5 sm:py-3.5 border-t border-slate-300 flex items-center space-x-2 sm:space-x-2.5 z-20 shrink-0 select-none">
-        {isRecording ? (
-          // Recording Audio UI Mode
-          <div className="flex-1 flex items-center justify-between bg-white rounded-2xl border border-rose-300 shadow-inner px-3.5 sm:px-4 py-2 sm:py-2.5 min-h-[44px] sm:min-h-[48px]">
-            <div className="flex items-center space-x-2.5">
-              <span className="w-3.5 h-3.5 rounded-full bg-rose-500 animate-ping shrink-0" />
-              <span className="text-xs sm:text-sm font-bold text-rose-600 font-mono shrink-0">
-                {String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:
-                {String(recordingSeconds % 60).padStart(2, '0')}
-              </span>
-              <span className="text-[11px] sm:text-xs text-slate-600 font-medium animate-pulse truncate">
-                ভয়েস রেকর্ড হচ্ছে (ছেড়ে দিলে যাবে)...
-              </span>
-            </div>
-
-            <div className="flex items-center space-x-2 shrink-0">
-              <span
-                className={`text-[10.5px] sm:text-xs font-semibold transition-colors ${
-                  isSlideCancelled ? 'text-rose-600 font-bold' : 'text-slate-400'
-                }`}
-              >
-                {isSlideCancelled ? 'ছেড়ে দিলে বাতিল হবে' : 'বামে স্লাইড করে বাতিল'}
-              </span>
-
-              <button
-                onClick={cancelRecordingAudio}
-                className="p-1.5 rounded-full text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
-                title="বাতিল করুন"
-              >
-                <Trash2 className="w-4 h-4 sm:w-4.5 sm:h-4.5" />
-              </button>
-
-              <button
-                onClick={finishRecordingAudio}
-                className="px-3 py-1.5 rounded-xl bg-emerald-600 text-white text-xs font-bold shadow-xs hover:bg-emerald-700 cursor-pointer"
-              >
-                পাঠান
-              </button>
-            </div>
+      <div className="bg-[#f0f2f5] px-2 sm:px-3.5 py-2 sm:py-2.5 border-t border-slate-300 flex items-center z-20 shrink-0 select-none w-full max-w-full overflow-hidden box-border relative">
+        {/* Quick Tap Hint Tooltip */}
+        {showMicHoldHint && (
+          <div className="absolute -top-10 right-4 bg-slate-900 text-white text-xs px-3 py-1.5 rounded-full shadow-lg border border-slate-700 flex items-center gap-1.5 animate-bounce z-40">
+            <Mic className="w-3.5 h-3.5 text-emerald-400" />
+            <span>ভয়েস পাঠাতে চেপে ধরে রাখুন</span>
           </div>
-        ) : (
-          // Standard Text Input Mode with enhanced vertical padding
-          <>
-            <div className="flex items-center space-x-1 sm:space-x-1.5 shrink-0">
-              {/* Emoji button */}
-              <button
-                onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
-                className="p-2 text-slate-600 hover:text-slate-800 rounded-full hover:bg-slate-200 transition-colors cursor-pointer"
-                title="ইমোজি"
-              >
-                <Smile className="w-5 h-5 sm:w-5.5 sm:h-5.5" />
-              </button>
-
-              {/* Attachment button */}
-              <button
-                onClick={() => setIsAttachmentMenuOpen(!isAttachmentMenuOpen)}
-                className="p-2 text-slate-600 hover:text-slate-800 rounded-full hover:bg-slate-200 transition-colors cursor-pointer"
-                title="ছবি বা ফাইল সংযুক্ত করুন"
-              >
-                <Paperclip className="w-5 h-5 sm:w-5.5 sm:h-5.5" />
-              </button>
-            </div>
-
-            {/* Input Box with enhanced top/down padding */}
-            <div className="flex-1 bg-white rounded-2xl border border-slate-300 focus-within:border-emerald-500 focus-within:ring-2 focus-within:ring-emerald-500/20 shadow-2xs px-3.5 sm:px-4 py-2 sm:py-2.5 flex items-center min-h-[44px] sm:min-h-[48px] transition-all">
-              <input
-                type="text"
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={
-                  selectedChatTab === 'direct' && selectedDirectUser
-                    ? `${selectedDirectUser.name}-কে বার্তা লিখুন...`
-                    : 'একটি বার্তা লিখুন...'
-                }
-                className="w-full text-[13px] sm:text-[14px] text-slate-900 placeholder-slate-400 bg-transparent focus:outline-hidden leading-relaxed"
-              />
-            </div>
-
-            {/* Mic / Send Button */}
-            {inputText.trim() ? (
-              <button
-                id="btn-chat-send"
-                onClick={handleSend}
-                className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white flex items-center justify-center shadow-sm transition-transform active:scale-95 cursor-pointer shrink-0"
-                title="পাঠান"
-              >
-                <Send className="w-4.5 h-4.5 sm:w-5 sm:h-5 ml-0.5" />
-              </button>
-            ) : (
-              <button
-                id="btn-chat-mic"
-                onMouseDown={handleMicMouseDown}
-                onMouseUp={handleMicMouseUp}
-                onMouseLeave={handleMicMouseLeave}
-                onTouchStart={handleMicTouchStart}
-                onTouchMove={handleMicTouchMove}
-                onTouchEnd={handleMicTouchEnd}
-                onContextMenu={(e) => e.preventDefault()}
-                className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full text-white flex items-center justify-center shadow-sm transition-all active:scale-110 cursor-pointer shrink-0 select-none ${
-                  isRecording
-                    ? 'bg-rose-600 animate-pulse ring-4 ring-rose-300 scale-105'
-                    : 'bg-[#00a884] hover:bg-[#008f6f]'
-                }`}
-                title="চাপ দিয়ে ধরে রাখুন রেকর্ড করতে, ছেড়ে দিলে সাথে সাথে পাঠানো হবে"
-              >
-                <Mic className="w-4.5 h-4.5 sm:w-5 sm:h-5" />
-              </button>
-            )}
-          </>
         )}
+
+        <div className="flex items-center space-x-1.5 sm:space-x-2 w-full max-w-full">
+          {isRecording ? (
+            // WhatsApp-style Active Recording Bar (While Holding)
+            <div className="flex-1 min-w-0 bg-white rounded-2xl border border-rose-300 shadow-inner px-3 py-1.5 min-h-[44px] flex items-center justify-between overflow-hidden gap-2">
+              {/* Left: Red blinker + Timer + Waveforms */}
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="w-3 h-3 rounded-full bg-rose-600 animate-ping" />
+                <span className="text-xs sm:text-sm font-bold text-rose-600 font-mono">
+                  {String(Math.floor(recordingSeconds / 60)).padStart(2, '0')}:
+                  {String(recordingSeconds % 60).padStart(2, '0')}
+                </span>
+                {/* Waveform bars */}
+                <div className="hidden xs:flex items-center space-x-0.5 h-3.5 ml-1">
+                  {[40, 80, 100, 60, 90, 70, 45, 85].map((h, i) => (
+                    <span
+                      key={i}
+                      style={{ height: `${h}%` }}
+                      className="w-0.5 bg-rose-500 rounded-full animate-pulse"
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {/* Middle: Slide to cancel indicator (interactive with slide offset) */}
+              <div
+                style={{ transform: `translateX(-${slideOffset * 0.4}px)` }}
+                className="flex-1 min-w-0 text-center transition-transform px-1"
+              >
+                <span
+                  className={`text-2xs sm:text-xs font-semibold truncate block transition-colors ${
+                    isSlideCancelled ? 'text-rose-600 font-bold animate-pulse' : 'text-slate-500'
+                  }`}
+                >
+                  {isSlideCancelled ? '❌ ছেড়ে দিলে বাতিল হবে' : '👈 বামে স্লাইড করে বাতিল'}
+                </span>
+              </div>
+
+              {/* Cancel Trash Icon */}
+              <button
+                type="button"
+                onClick={cancelRecordingAudio}
+                className="p-1 rounded-full text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer shrink-0"
+                title="রেকর্ড বাতিল"
+              >
+                <Trash2 className={`w-4 h-4 ${isSlideCancelled ? 'text-rose-600 animate-bounce' : 'text-slate-400'}`} />
+              </button>
+            </div>
+          ) : (
+            // Standard Text / Attachment Input Bar
+            <>
+              <div className="flex items-center space-x-0.5 sm:space-x-1 shrink-0">
+                {/* Emoji button */}
+                <button
+                  onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
+                  className="p-1.5 sm:p-2 text-slate-600 hover:text-slate-800 rounded-full hover:bg-slate-200 transition-colors cursor-pointer"
+                  title="ইমোজি"
+                >
+                  <Smile className="w-5 h-5" />
+                </button>
+
+                {/* Attachment button */}
+                <button
+                  onClick={() => setIsAttachmentMenuOpen(!isAttachmentMenuOpen)}
+                  className="p-1.5 sm:p-2 text-slate-600 hover:text-slate-800 rounded-full hover:bg-slate-200 transition-colors cursor-pointer"
+                  title="ছবি বা ফাইল সংযুক্ত করুন"
+                >
+                  <Paperclip className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Input Box */}
+              <div className="flex-1 min-w-0 bg-white rounded-2xl border border-slate-300 focus-within:border-emerald-500 focus-within:ring-2 focus-within:ring-emerald-500/20 shadow-2xs px-3 sm:px-4 py-1.5 sm:py-2 flex items-center min-h-[42px] sm:min-h-[46px] transition-all">
+                <input
+                  type="text"
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder={
+                    selectedChatTab === 'direct' && selectedDirectUser
+                      ? `${selectedDirectUser.name}-কে লিখুন...`
+                      : 'একটি বার্তা লিখুন...'
+                  }
+                  className="w-full text-[13px] sm:text-[14px] text-slate-900 placeholder-slate-400 bg-transparent focus:outline-hidden leading-relaxed"
+                />
+              </div>
+            </>
+          )}
+
+          {/* Right Action Button: Send text OR Hold-to-Record Mic */}
+          {inputText.trim() && !isRecording ? (
+            <button
+              id="btn-chat-send"
+              onClick={handleSend}
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-[#00a884] hover:bg-[#008f6f] text-white flex items-center justify-center shadow-sm transition-transform active:scale-95 cursor-pointer shrink-0"
+              title="পাঠান"
+            >
+              <Send className="w-4.5 h-4.5 sm:w-5 sm:h-5 ml-0.5" />
+            </button>
+          ) : (
+            <button
+              id="btn-chat-mic"
+              onPointerDown={handleMicPointerDown}
+              onTouchStart={handleMicTouchStart}
+              onTouchMove={handleMicTouchMove}
+              onTouchEnd={handleMicTouchEnd}
+              onContextMenu={(e) => e.preventDefault()}
+              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-full text-white flex items-center justify-center shadow-md transition-all cursor-pointer shrink-0 select-none ${
+                isRecording
+                  ? 'bg-rose-600 ring-8 ring-rose-400/40 scale-120 animate-pulse'
+                  : 'bg-[#00a884] hover:bg-[#008f6f] active:scale-110'
+              }`}
+              title="চাপ দিয়ে ধরে রাখুন রেকর্ড করতে, ছেড়ে দিলে সাথে সাথে পাঠানো হবে"
+            >
+              <Mic className={`transition-transform ${isRecording ? 'w-5 h-5 scale-110' : 'w-4.5 h-4.5 sm:w-5 sm:h-5'}`} />
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Emoji Picker Popover */}
@@ -1288,6 +1623,13 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
       <ActiveMembersDrawer
         isOpen={isMembersDrawerOpen}
         onClose={() => setIsMembersDrawerOpen(false)}
+      />
+
+      {/* PWA Direct Installation & Guidance Modal */}
+      <PwaInstallModal
+        isOpen={isPwaInstallModalOpen}
+        onClose={() => setIsPwaInstallModalOpen(false)}
+        language={language}
       />
     </div>
   );

@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useFund } from '../context/FundContext';
 import { formatCustomDate } from '../utils/formatters';
+import { sendTestIncomingCallAlert } from '../utils/pushNotification';
 
 interface NotificationCenterProps {
   isOpen: boolean;
@@ -46,12 +47,16 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
 
   const getIconForType = (type: string) => {
     switch (type) {
+      case 'due_reminder':
+        return <Bell className="w-4 h-4 text-amber-600 animate-bounce" />;
       case 'payment':
         return <CreditCard className="w-4 h-4 text-emerald-600" />;
       case 'investment':
         return <TrendingUp className="w-4 h-4 text-indigo-600" />;
       case 'member':
         return <User className="w-4 h-4 text-amber-600" />;
+      case 'urgent_notice':
+        return <Sparkles className="w-4 h-4 text-rose-600" />;
       default:
         return <Bell className="w-4 h-4 text-slate-600" />;
     }
@@ -97,13 +102,22 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
               <span className="text-2xs font-semibold">{soundEnabled ? (isBn ? 'শব্দ অন' : 'Sound On') : (isBn ? 'শব্দ অফ' : 'Muted')}</span>
             </button>
 
-            {pushPermissionStatus !== 'granted' && (
+            {pushPermissionStatus !== 'granted' ? (
               <button
                 onClick={requestPushPermissions}
-                className="p-1.5 rounded-lg bg-emerald-50 border border-emerald-300 text-emerald-800 hover:bg-emerald-100 font-semibold flex items-center space-x-1"
+                className="p-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 font-semibold flex items-center space-x-1 shadow-xs cursor-pointer"
               >
-                <Smartphone className="w-3.5 h-3.5 text-emerald-600" />
-                <span className="text-2xs">{isBn ? 'ব্রাউজার পুশ চালু করুন' : 'Enable Push Alerts'}</span>
+                <Smartphone className="w-3.5 h-3.5" />
+                <span className="text-2xs">{isBn ? 'লক-স্ক্রিন ও পুশ নোটিফিকেশন চালু করুন' : 'Enable Lock-Screen & Push Alerts'}</span>
+              </button>
+            ) : (
+              <button
+                onClick={() => sendTestIncomingCallAlert(isBn)}
+                className="p-1.5 rounded-lg bg-teal-700 text-white hover:bg-teal-800 font-semibold flex items-center space-x-1 shadow-xs cursor-pointer"
+                title={isBn ? 'লক-স্ক্রিন ইনকামিং কল টেস্ট করুন' : 'Test Lock-Screen Call'}
+              >
+                <Smartphone className="w-3.5 h-3.5" />
+                <span className="text-2xs">{isBn ? 'কল টেস্ট' : 'Test Call'}</span>
               </button>
             )}
           </div>

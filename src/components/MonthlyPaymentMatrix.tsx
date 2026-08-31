@@ -17,11 +17,25 @@ import {
   TrendingUp,
   ChevronLeft,
   Flame,
+  Globe,
+  ArrowUpDown,
+  Image as ImageIcon,
+  Loader2,
 } from 'lucide-react';
 import { useFund } from '../context/FundContext';
 import { useAuth } from '../context/AuthContext';
 import { Member, MonthlyPayment } from '../types';
-import { MONTHS, formatBDT, toBengaliNumerals, getCountryFlag, getCountryBn } from '../utils/formatters';
+import {
+  MONTHS,
+  formatBDT,
+  toBengaliNumerals,
+  getCountryFlag,
+  getCountryBn,
+  getCleanBaseName,
+  sortMembersByBaseName,
+  sortMembersByCountryAndName,
+} from '../utils/formatters';
+import { printYearlyFundMatrix } from '../utils/printHelpers';
 
 interface MonthlyPaymentMatrixProps {
   language: 'bn' | 'en';
@@ -34,7 +48,7 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
   onSelectMember,
   onOpenAddPaymentForMember,
 }) => {
-  const { members, payments, selectedYear, setSelectedYear, availableYears } = useFund();
+  const { members, payments, selectedYear, setSelectedYear, availableYears, currentFund } = useFund();
   const { isAdmin } = useAuth();
   const isBn = language === 'bn';
 
@@ -47,6 +61,8 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
   const monthCardRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const tableScrollRef = useRef<HTMLDivElement>(null);
   const tableMonthColRefs = useRef<Record<number, HTMLTableCellElement | null>>({});
+  const tableRef = useRef<HTMLTableElement | null>(null);
+  const [isExportingImage, setIsExportingImage] = useState(false);
 
   // Real-world current year and month
   const now = new Date();
@@ -77,10 +93,10 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
     members.forEach((m) => {
       if (m.country) set.add(m.country);
     });
-    return Array.from(set);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [members]);
 
-  // Filtered members list
+  // Filtered members list with country and search
   const filteredMembers = useMemo(() => {
     return members.filter((member) => {
       const q = searchQuery.toLowerCase().trim();
@@ -96,6 +112,53 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
       return matchSearch && matchCountry;
     });
   }, [members, searchQuery, selectedCountryFilter]);
+
+  // Group filtered members by Country, and sort each group alphabetically by clean base name (ignoring Md/মোঃ)
+  const countryGroups = useMemo(() => {
+    const groupsMap = new Map<string, Member[]>();
+
+    // Sort by clean root name
+    const sorted = sortMembersByBaseName<Member>(filteredMembers, isBn);
+
+    sorted.forEach((m) => {
+      const c = m.country || 'Other';
+      if (!groupsMap.has(c)) {
+        groupsMap.set(c, []);
+      }
+      groupsMap.get(c)!.push(m);
+    });
+
+    const sortedCountryKeys = Array.from(groupsMap.keys()).sort((a, b) => {
+      return a.localeCompare(b, isBn ? 'bn' : 'en');
+    });
+
+    return sortedCountryKeys.map((countryKey) => {
+      const groupMembers = groupsMap.get(countryKey)!;
+      let totalCountryPaid = 0;
+
+      groupMembers.forEach((m) => {
+        const monthMap = paymentsMap.get(m.id);
+        if (monthMap) {
+          monthMap.forEach((pmts) => {
+            totalCountryPaid += pmts.reduce((sum, p) => sum + (p.amount || 0), 0);
+          });
+        }
+      });
+
+      return {
+        country: countryKey,
+        countryBn: getCountryBn(countryKey),
+        flag: getCountryFlag(countryKey),
+        members: groupMembers,
+        totalCollectedYear: totalCountryPaid,
+      };
+    });
+  }, [filteredMembers, paymentsMap, isBn]);
+
+  // Total members in current view
+  const totalFilteredCount = useMemo(() => {
+    return countryGroups.reduce((sum, g) => sum + g.members.length, 0);
+  }, [countryGroups]);
 
   // Monthly totals across all members for selected year
   const monthlyFundTotals = useMemo(() => {
@@ -180,7 +243,9 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
       'Status',
     ];
 
-    const rows = filteredMembers.map((member) => {
+    const allSortedMembers = countryGroups.flatMap((g) => g.members);
+
+    const rows = allSortedMembers.map((member) => {
       const monthMap = paymentsMap.get(member.id);
       let memberYearTotal = 0;
 
@@ -215,30 +280,69 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
     document.body.removeChild(link);
   };
 
+  const handleDownloadHighQualityImage = async () => {
+    if (!tableRef.current) return;
+    setIsExportingImage(true);
+    try {
+      const { toPng } = await import('html-to-image');
+      const tableEl = tableRef.current;
+
+      const dataUrl = await toPng(tableEl, {
+        pixelRatio: 2, // 2x high resolution
+        backgroundColor: '#ffffff',
+        cacheBust: true,
+        fontEmbedCSS: '', // Prevents trying to read cross-origin Google Fonts stylesheets rules
+        filter: (node) => {
+          // Exclude any controls or non-exportable buttons if present
+          if (node instanceof HTMLElement && node.classList.contains('no-export')) {
+            return false;
+          }
+          return true;
+        },
+      });
+
+      const link = document.createElement('a');
+      link.href = dataUrl;
+      link.download = `Probashi_Mukto_Fund_Ledger_${selectedYear}_HD.png`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (error) {
+      console.error('Failed to export high quality image:', error);
+    } finally {
+      setIsExportingImage(false);
+    }
+  };
+
   const handlePrint = () => {
-    window.print();
+    const allSortedMembers = countryGroups.flatMap((g) => g.members);
+    printYearlyFundMatrix(allSortedMembers, payments, selectedYear, currentFund, isBn);
   };
 
   return (
-    <section className="bg-white rounded-3xl border border-slate-200 shadow-sm overflow-hidden mb-6 flex flex-col">
+    <section className="bg-white rounded-none border border-slate-200 shadow-xs overflow-hidden mb-6 flex flex-col w-full">
       {/* Header & Controls Bar */}
       <div className="p-3 sm:p-5 border-b border-slate-100 bg-slate-50/50">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 sm:gap-4">
           
           {/* Title & Stats badge */}
           <div>
-            <div className="flex items-center space-x-2">
-              <h2 className="text-sm sm:text-base lg:text-lg font-bold text-slate-800 tracking-tight">
-                {isBn ? `সদস্য সঞ্চয় আদায় স্ট্যাটাস (${toBengaliNumerals(selectedYear)} ট্র্যাকার)` : `Member Payment Status (${selectedYear} Tracker)`}
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm sm:text-base lg:text-lg font-bold text-slate-800 tracking-tight flex items-center gap-1.5">
+                <Globe className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>{isBn ? `দেশভিত্তিক সদস্য তালিকা ও সঞ্চয় লেজার (${toBengaliNumerals(selectedYear)})` : `Country-Wise Member Ledger (${selectedYear})`}</span>
               </h2>
-              <span className="px-2 py-0.5 rounded-full text-[10px] sm:text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200 shrink-0">
-                {isBn ? `${toBengaliNumerals(filteredMembers.length)} জন` : `${filteredMembers.length} Members`}
+              <span className="px-2 py-0.5 rounded-none text-[10px] sm:text-xs font-semibold bg-emerald-100 text-emerald-800 border border-emerald-200 shrink-0">
+                {isBn ? `${toBengaliNumerals(totalFilteredCount)} জন সদস্য` : `${totalFilteredCount} Members`}
+              </span>
+              <span className="px-2 py-0.5 rounded-none text-[9px] sm:text-3xs font-medium bg-slate-200 text-slate-700 border border-slate-300 shrink-0">
+                {isBn ? 'মোঃ/MD বাদে মূল নাম বর্ণানুক্রমিক' : 'Sorted by core name'}
               </span>
             </div>
             <p className="text-[11px] sm:text-xs text-slate-500 mt-0.5">
               {isBn
-                ? 'জানুয়ারি থেকে ডিসেম্বর পর্যন্ত সকল সদস্যের সঞ্চয় পরিশোধের লাইভ আপডেট।'
-                : 'Month-by-month payment tracking with instant verification and receipts.'}
+                ? 'দেশ অনুযায়ী গ্রুপকৃত এবং মোঃ / MD বাদ দিয়ে মূল নামের বর্ণানুক্রমিক ক্রমানুসারে সাজানো।'
+                : 'Grouped by country and sorted alphabetically by core name (ignoring Md/prefix).'}
             </p>
           </div>
 
@@ -254,27 +358,27 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={isBn ? 'সদস্য খুঁজুন...' : 'Search members...'}
-                className="w-full pl-8 pr-2.5 py-1 sm:py-1.5 text-[11px] sm:text-xs bg-white border border-slate-200 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all placeholder:text-slate-400"
+                className="w-full pl-8 pr-2.5 py-1 sm:py-1.5 text-[11px] sm:text-xs bg-white border border-slate-200 rounded-none focus:outline-hidden focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 transition-all placeholder:text-slate-400"
               />
               {searchQuery && (
                 <button
                   onClick={() => setSearchQuery('')}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs cursor-pointer"
                 >
                   ✕
                 </button>
               )}
             </div>
 
-            {/* Country Filter */}
+            {/* Country Dropdown Filter */}
             <div className="relative">
               <select
                 id="select-country-filter"
                 value={selectedCountryFilter}
                 onChange={(e) => setSelectedCountryFilter(e.target.value)}
-                className="py-1 sm:py-1.5 px-2 sm:px-3 text-[11px] sm:text-xs bg-white border border-slate-200 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 text-slate-700 font-medium cursor-pointer"
+                className="py-1 sm:py-1.5 px-2 sm:px-3 text-[11px] sm:text-xs bg-white border border-slate-200 rounded-none focus:outline-hidden focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 text-slate-700 font-medium cursor-pointer"
               >
-                <option value="all">{isBn ? 'সকল দেশ' : 'All Countries'}</option>
+                <option value="all">{isBn ? '🌐 সকল দেশ (দেশভিত্তিক)' : '🌐 All Countries'}</option>
                 {countries.map((c) => (
                   <option key={c} value={c}>
                     {getCountryFlag(c)} {isBn ? getCountryBn(c) : c}
@@ -289,7 +393,7 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
                 id="select-matrix-year"
                 value={selectedYear}
                 onChange={(e) => setSelectedYear(Number(e.target.value))}
-                className="py-1 sm:py-1.5 px-2 sm:px-3 text-[11px] sm:text-xs bg-emerald-50 border border-emerald-300 rounded-lg focus:outline-hidden text-emerald-900 font-bold cursor-pointer"
+                className="py-1 sm:py-1.5 px-2 sm:px-3 text-[11px] sm:text-xs bg-emerald-50 border border-emerald-300 rounded-none focus:outline-hidden text-emerald-900 font-bold cursor-pointer"
               >
                 {availableYears.map((yr) => (
                   <option key={yr} value={yr}>
@@ -299,47 +403,104 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
               </select>
             </div>
 
-            {/* Print & CSV buttons */}
+            {/* Excel / CSV Export button */}
             <button
               id="btn-export-csv"
               onClick={handleExportCSV}
-              className="p-1 sm:px-2.5 sm:py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-[11px] sm:text-xs font-semibold flex items-center space-x-1 transition-colors"
-              title={isBn ? 'সিএসভি ডাউনলোড' : 'Export CSV'}
+              className="p-1 sm:px-2.5 sm:py-1.5 rounded-none border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-[11px] sm:text-xs font-semibold flex items-center space-x-1 transition-colors cursor-pointer"
+              title={isBn ? 'এক্সেল/সিএসভি ফাইল ডাউনলোড' : 'Export Excel / CSV'}
             >
-              <Download className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">{isBn ? 'সিএসভি' : 'CSV'}</span>
+              <Download className="w-3.5 h-3.5 text-emerald-600" />
+              <span className="hidden sm:inline">{isBn ? 'এক্সেল/CSV' : 'Excel/CSV'}</span>
             </button>
 
+            {/* High Quality Image Download button */}
+            <button
+              id="btn-download-matrix-image"
+              onClick={handleDownloadHighQualityImage}
+              disabled={isExportingImage}
+              className="p-1 sm:px-2.5 sm:py-1.5 rounded-none border border-emerald-300 bg-emerald-50/80 hover:bg-emerald-100 text-emerald-800 text-[11px] sm:text-xs font-semibold flex items-center space-x-1.5 transition-colors cursor-pointer disabled:opacity-50"
+              title={isBn ? 'হাই-কোয়ালিটি ছবি (HD Image) ডাউনলোড করুন' : 'Download High Quality Image (HD)'}
+            >
+              {isExportingImage ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600" />
+              ) : (
+                <ImageIcon className="w-3.5 h-3.5 text-emerald-600" />
+              )}
+              <span className="hidden sm:inline">
+                {isExportingImage ? (isBn ? 'তৈরি হচ্ছে...' : 'Exporting...') : (isBn ? 'ছবি ডাউনলোড' : 'HD Image')}
+              </span>
+            </button>
+
+            {/* Print button */}
             <button
               id="btn-print-table"
               onClick={handlePrint}
-              className="p-1 sm:px-2.5 sm:py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-[11px] sm:text-xs font-semibold flex items-center space-x-1 transition-colors"
-              title={isBn ? 'প্রিন্ট রিপোর্ট' : 'Print Table'}
+              className="p-1 sm:px-2.5 sm:py-1.5 rounded-none border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 text-[11px] sm:text-xs font-semibold flex items-center space-x-1 transition-colors cursor-pointer"
+              title={isBn ? 'প্রিন্ট রিপোর্ট (A4 ফিট)' : 'Print Table'}
             >
               <Printer className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">{isBn ? 'প্রিন্ট' : 'Print'}</span>
+              <span className="hidden sm:inline">{isBn ? 'প্রিন্ট লেজার' : 'Print'}</span>
             </button>
 
           </div>
+        </div>
+
+        {/* Quick Country Pills Bar */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pt-3 pb-1 no-scrollbar text-xs">
+          <span className="text-[11px] font-bold text-slate-500 shrink-0 mr-1">
+            {isBn ? 'দেশ ফিল্টার:' : 'Filter Country:'}
+          </span>
+          <button
+            onClick={() => setSelectedCountryFilter('all')}
+            className={`px-2.5 py-1 rounded-none text-xs font-semibold shrink-0 transition-all cursor-pointer ${
+              selectedCountryFilter === 'all'
+                ? 'bg-emerald-600 text-white shadow-xs'
+                : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            🌐 {isBn ? 'সকল দেশ' : 'All Countries'}
+          </button>
+          {countries.map((c) => {
+            const count = members.filter((m) => m.country === c).length;
+            const isSelected = selectedCountryFilter === c;
+            return (
+              <button
+                key={c}
+                onClick={() => setSelectedCountryFilter(c)}
+                className={`px-2.5 py-1 rounded-none text-xs font-semibold shrink-0 transition-all flex items-center gap-1 cursor-pointer ${
+                  isSelected
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'bg-white border border-slate-200 text-slate-700 hover:bg-slate-100'
+                }`}
+              >
+                <span>{getCountryFlag(c)}</span>
+                <span>{isBn ? getCountryBn(c) : c}</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-none ${isSelected ? 'bg-emerald-800 text-emerald-100' : 'bg-slate-100 text-slate-500'}`}>
+                  {isBn ? toBengaliNumerals(count) : count}
+                </span>
+              </button>
+            );
+          })}
         </div>
 
         {/* Quick Legend Bar */}
         <div className="flex flex-wrap items-center gap-2 sm:gap-4 mt-2.5 pt-2.5 border-t border-slate-100 text-[10.5px] sm:text-xs text-slate-500">
           <span className="font-semibold text-slate-700">{isBn ? 'নির্দেশিকা:' : 'Legend:'}</span>
           <span className="inline-flex items-center space-x-1">
-            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            <span className="w-2 h-2 rounded-none bg-emerald-500" />
             <span className="text-emerald-700 font-medium">{isBn ? 'পরিশোধিত' : 'Paid'}</span>
           </span>
           <span className="inline-flex items-center space-x-1">
-            <span className="w-2 h-2 rounded-full bg-amber-400" />
+            <span className="w-2 h-2 rounded-none bg-amber-400" />
             <span className="text-amber-700 font-medium">{isBn ? 'আংশিক' : 'Partial'}</span>
           </span>
           <span className="inline-flex items-center space-x-1">
-            <span className="w-2 h-2 rounded-full bg-slate-300" />
+            <span className="w-2 h-2 rounded-none bg-slate-300" />
             <span className="text-slate-600">{isBn ? 'বকেয়া' : 'Due'}</span>
           </span>
           <span className="text-[10px] text-slate-400 ml-auto hidden sm:inline">
-            {isBn ? '💡 সদস্যের নামে ক্লিক করে পূর্ণাঙ্গ হিস্ট্রি ও রশিদ স্লিপ দেখুন।' : '💡 Click on any member to view full statement slip.'}
+            {isBn ? '💡 সদস্যের নামের উপর ক্লিক করে A4 সাইজের অফিসিয়াল রশিদ প্রিন্ট করুন।' : '💡 Click on any member to print A4 statement slip.'}
           </span>
         </div>
       </div>
@@ -365,7 +526,7 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
               const targetMonth = selectedYear === currentRealYear ? currentRealMonth : 1;
               scrollToMonth(targetMonth, true);
             }}
-            className="px-2.5 py-1 rounded-lg bg-emerald-100/80 hover:bg-emerald-200 text-emerald-800 font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
+            className="px-2.5 py-1 rounded-none bg-emerald-100/80 hover:bg-emerald-200 text-emerald-800 font-bold text-xs flex items-center gap-1 transition-colors cursor-pointer"
           >
             <Sparkles className="w-3 h-3 text-emerald-600" />
             <span>{isBn ? 'রানিং মাসে যান' : 'Go to Current Month'}</span>
@@ -390,11 +551,11 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
                   monthCardRefs.current[m.id] = el;
                 }}
                 onClick={() => scrollToMonth(m.id, true)}
-                className={`shrink-0 w-36 sm:w-44 p-3 rounded-2xl border transition-all cursor-pointer snap-center select-none ${
+                className={`shrink-0 w-36 sm:w-44 p-3 rounded-none border transition-all cursor-pointer snap-center select-none ${
                   isRunningMonth
-                    ? 'bg-gradient-to-br from-emerald-800 via-slate-900 to-emerald-950 text-white border-emerald-400/60 shadow-md ring-2 ring-emerald-400/40 transform scale-[1.02]'
+                    ? 'bg-gradient-to-br from-emerald-800 via-slate-900 to-emerald-950 text-white border-emerald-400/60 shadow-md ring-1 ring-emerald-400/40'
                     : isFocused
-                    ? 'bg-white border-emerald-500 shadow-xs text-slate-900 ring-2 ring-emerald-500/20'
+                    ? 'bg-white border-emerald-500 shadow-xs text-slate-900 ring-1 ring-emerald-500/20'
                     : 'bg-white border-slate-200 text-slate-800 hover:border-slate-300 hover:bg-slate-50/80'
                 }`}
               >
@@ -404,7 +565,7 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
                     {isBn ? m.nameBn : m.nameEn}
                   </span>
                   {isRunningMonth ? (
-                    <span className="text-3xs font-extrabold px-1.5 py-0.5 rounded-full bg-emerald-400 text-slate-950 uppercase tracking-wider animate-pulse flex items-center gap-0.5">
+                    <span className="text-3xs font-extrabold px-1.5 py-0.5 rounded-none bg-emerald-400 text-slate-950 uppercase tracking-wider animate-pulse flex items-center gap-0.5">
                       <Flame className="w-2.5 h-2.5 fill-current" />
                       <span>{isBn ? 'রানিং মাস' : 'Current'}</span>
                     </span>
@@ -446,21 +607,21 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
       </div>
 
       {/* Interactive Grid Table */}
-      <div ref={tableScrollRef} className="overflow-x-auto relative scroll-smooth no-scrollbar">
-        <table className="w-full text-left text-xs border-collapse">
+      <div ref={tableScrollRef} className="overflow-x-auto relative scroll-smooth no-scrollbar w-full">
+        <table ref={tableRef} className="w-full text-left text-xs border-collapse">
           
           {/* Table Header */}
           <thead>
-            <tr className="bg-slate-100/90 text-slate-700 uppercase tracking-wider text-[10px] sm:text-2xs border-b border-slate-200 select-none">
-              {/* Sticky Member Column */}
-              <th className="sticky left-0 z-20 bg-slate-100 py-2.5 sm:py-3.5 px-2.5 sm:px-4 font-bold min-w-[140px] sm:min-w-[190px] md:min-w-[220px] shadow-r">
+            <tr className="bg-slate-100 text-slate-700 uppercase tracking-wider text-[10px] sm:text-2xs border-b border-slate-200 select-none">
+              {/* Sticky Member Column (Left Frozen) */}
+              <th className="sticky left-0 z-20 bg-slate-100 py-1.5 sm:py-2.5 px-1.5 sm:px-3 font-bold min-w-[110px] sm:min-w-[180px] md:min-w-[210px] shadow-r border-r border-slate-200">
                 <div className="flex items-center justify-between">
-                  <span>{isBn ? 'সদস্যের নাম ও দেশ' : 'Member & Location'}</span>
-                  <span className="text-[9px] sm:text-2xs text-slate-400 lowercase font-normal">{isBn ? 'শেয়ার' : 'share'}</span>
+                  <span>{isBn ? 'সদস্যের নাম (দেশভিত্তিক)' : 'Member Name & Country'}</span>
+                  <span className="text-[9px] sm:text-2xs text-slate-400 lowercase font-normal hidden sm:inline">{isBn ? 'শেয়ার' : 'share'}</span>
                 </div>
               </th>
 
-              {/* 12 Months: January - December */}
+              {/* 12 Months: January - December (Scrollable Horizontal Area) */}
               {MONTHS.map((m) => {
                 const isRunning = selectedYear === currentRealYear && m.id === currentRealMonth;
                 return (
@@ -470,7 +631,7 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
                       tableMonthColRefs.current[m.id] = el;
                     }}
                     onClick={() => scrollToMonth(m.id, true)}
-                    className={`py-2 sm:py-3 px-1 sm:px-2 text-center font-bold min-w-[56px] sm:min-w-[70px] md:min-w-[80px] border-l border-slate-200/60 cursor-pointer transition-colors ${
+                    className={`py-1.5 sm:py-2 px-1 text-center font-bold min-w-[50px] sm:min-w-[62px] md:min-w-[70px] border-l border-slate-200/60 cursor-pointer transition-colors ${
                       isRunning
                         ? 'bg-emerald-100 text-emerald-950 border-emerald-300'
                         : activeFocusedMonth === m.id
@@ -486,24 +647,24 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-ping" />
                       )}
                     </div>
-                    <div className="text-[9px] sm:text-2xs text-slate-400 font-normal">
+                    <div className="text-[8.5px] sm:text-2xs text-slate-400 font-normal">
                       {isRunning ? (isBn ? '⭐ রানিং' : 'Current') : (isBn ? m.shortBn : m.id)}
                     </div>
                   </th>
                 );
               })}
 
-              {/* Total Column on Right */}
-              <th className="sticky right-0 z-20 bg-slate-100 py-2.5 sm:py-3.5 px-2.5 sm:px-4 text-right font-bold min-w-[95px] sm:min-w-[125px] border-l-2 border-slate-200 shadow-l">
-                <div className="text-slate-900 font-extrabold text-[10.5px] sm:text-xs">{isBn ? 'মোট প্রাপ্তি' : 'Total Paid'}</div>
-                <div className="text-[9px] sm:text-2xs text-slate-500 font-normal">{isBn ? 'টার্গেট / স্ট্যাটাস' : 'Target / Status'}</div>
+              {/* Total Column on Right (Right Frozen) - Optimized padding on mobile */}
+              <th className="sticky right-0 z-20 bg-slate-100 py-1.5 sm:py-2.5 px-1 sm:px-3 text-right font-bold min-w-[70px] sm:min-w-[110px] border-l-2 border-slate-200 shadow-l">
+                <div className="text-slate-900 font-extrabold text-[10px] sm:text-xs leading-tight">{isBn ? 'মোট প্রাপ্তি' : 'Total Paid'}</div>
+                <div className="text-[8.5px] sm:text-2xs text-slate-500 font-normal leading-tight">{isBn ? 'টার্গেট / স্ট্যাটাস' : 'Target / Status'}</div>
               </th>
             </tr>
           </thead>
 
           {/* Table Body */}
           <tbody className="divide-y divide-slate-100 bg-white">
-            {filteredMembers.length === 0 ? (
+            {countryGroups.length === 0 || totalFilteredCount === 0 ? (
               <tr>
                 <td colSpan={14} className="py-12 text-center text-slate-400">
                   <div className="flex flex-col items-center justify-center space-y-2">
@@ -518,143 +679,183 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
                 </td>
               </tr>
             ) : (
-              filteredMembers.map((member, index) => {
-                const monthMap = paymentsMap.get(member.id);
-                let memberTotalYearPaid = 0;
-                const yearlyTarget = (member.monthlyShareAmount || 1000) * 12;
-
+              countryGroups.map((group) => {
                 return (
-                  <tr
-                    key={member.id}
-                    className="hover:bg-slate-50/80 transition-colors group"
-                  >
-                    {/* Sticky Member Info Column */}
-                    <td
-                      className="sticky left-0 z-10 bg-white group-hover:bg-slate-50/90 py-2 sm:py-3 px-2 sm:px-4 shadow-r transition-colors cursor-pointer"
-                      onClick={() => onSelectMember(member)}
-                    >
-                      <div className="flex items-center space-x-2 sm:space-x-2.5">
-                        <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center text-slate-700 font-bold text-[10px] sm:text-xs shrink-0 overflow-hidden shadow-2xs">
-                          {member.avatarUrl ? (
-                            <img
-                              src={member.avatarUrl}
-                              alt={member.name}
-                              className="w-full h-full object-cover"
-                              referrerPolicy="no-referrer"
-                            />
-                          ) : (
-                            <span>{member.name.charAt(0)}</span>
-                          )}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center space-x-1">
-                            <p className="text-[11px] sm:text-xs md:text-sm font-bold text-slate-900 truncate hover:text-emerald-700">
-                              {isBn ? member.nameBn || member.name : member.name}
-                            </p>
-                            <span className="text-[10px] sm:text-xs shrink-0" title={member.country}>
-                              {getCountryFlag(member.country)}
+                  <React.Fragment key={group.country}>
+                    {/* Country Header Grouping Banner (Sticky Left Info so it never scrolls off) */}
+                    <tr className="bg-slate-100/95 border-t-2 border-b border-emerald-600/30">
+                      <td
+                        colSpan={14}
+                        className="py-1 px-1.5 sm:px-2 text-slate-800 font-bold"
+                      >
+                        <div className="sticky left-0 inline-flex items-center gap-1.5 sm:gap-3 flex-wrap py-0.5 px-1 z-10 w-fit max-w-[calc(100vw-36px)]">
+                          <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+                            <span className="text-sm sm:text-base leading-none">{group.flag}</span>
+                            <span className="font-extrabold text-slate-900 text-xs sm:text-sm">
+                              {isBn ? group.countryBn : group.country}
                             </span>
                           </div>
-                          <div className="flex items-center space-x-1 sm:space-x-2 text-[9.5px] sm:text-2xs text-slate-500">
-                            <span className="truncate">{isBn ? getCountryBn(member.country) : member.country}</span>
-                            <span>•</span>
-                            <span className="font-semibold text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded">
-                              {formatBDT(member.monthlyShareAmount, isBn)}/{isBn ? 'মাস' : 'mo'}
-                            </span>
+
+                          <span className="text-[9.5px] sm:text-2xs font-semibold px-1.5 sm:px-2 py-0.5 rounded-none bg-emerald-100 text-emerald-800 border border-emerald-300 shrink-0">
+                            {isBn ? `${toBengaliNumerals(group.members.length)} জন সদস্য` : `${group.members.length} Members`}
+                          </span>
+
+                          <div className="text-[9.5px] sm:text-2xs font-semibold text-emerald-800 bg-emerald-50 px-1.5 sm:px-2 py-0.5 rounded-none border border-emerald-200/70 shrink-0 flex items-center gap-1">
+                            <span className="text-slate-600 font-medium hidden sm:inline">{isBn ? 'দেশের মোট জমা:' : 'Total:'}</span>
+                            <span className="text-slate-600 font-medium sm:hidden">{isBn ? 'মোট:' : 'Total:'}</span>
+                            <strong className="font-mono font-bold text-slate-900">{formatBDT(group.totalCollectedYear, isBn)}</strong>
                           </div>
+
+                          <span className="text-[9.5px] sm:text-3xs text-slate-500 font-normal hidden lg:inline">
+                            ({isBn ? 'মূল নাম অনুসারে সাজানো' : 'Sorted alphabetically'})
+                          </span>
                         </div>
-                      </div>
-                    </td>
+                      </td>
+                    </tr>
 
-                    {/* 12 Month Cells */}
-                    {MONTHS.map((m) => {
-                      const monthPayments = monthMap?.get(m.id) || [];
-                      const monthPaid = monthPayments.reduce((s, p) => s + (p.amount || 0), 0);
-                      memberTotalYearPaid += monthPaid;
-
-                      const isFullPaid = monthPaid >= member.monthlyShareAmount;
-                      const isPartial = monthPaid > 0 && monthPaid < member.monthlyShareAmount;
-                      const isUnpaid = monthPaid === 0;
-
-                      const isRunning = selectedYear === currentRealYear && m.id === currentRealMonth;
+                    {/* Members of this Country */}
+                    {group.members.map((member) => {
+                      const monthMap = paymentsMap.get(member.id);
+                      let memberTotalYearPaid = 0;
+                      const yearlyTarget = (member.monthlyShareAmount || 1000) * 12;
+                      const cleanBase = getCleanBaseName(isBn ? member.nameBn || member.name : member.name);
 
                       return (
-                        <td
-                          key={m.id}
-                          className={`py-1.5 sm:py-2.5 px-0.5 sm:px-1.5 text-center border-l border-slate-100 transition-colors ${
-                            isRunning ? 'bg-emerald-50/30' : ''
-                          }`}
+                        <tr
+                          key={member.id}
+                          className="hover:bg-slate-50/80 transition-colors group"
                         >
-                          {isFullPaid ? (
-                            <div
-                              onClick={() => onSelectMember(member)}
-                              className="inline-flex flex-col items-center justify-center p-0.5 sm:py-1.5 sm:px-2 rounded-md sm:rounded-lg bg-emerald-50/90 border border-emerald-200/80 text-emerald-800 hover:bg-emerald-100 transition-all cursor-pointer w-full"
-                              title={`${isBn ? m.nameBn : m.nameEn}: ${formatBDT(monthPaid, isBn)} (${monthPayments[0]?.paymentMethod || 'Paid'})`}
-                            >
-                              <div className="flex items-center space-x-0.5">
-                                <CheckCircle2 className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5 text-emerald-600 shrink-0" />
-                                <span className="font-bold text-[10px] sm:text-xs">
-                                  {formatBDT(monthPaid, isBn)}
-                                </span>
+                          {/* Sticky Member Info Column (Left Frozen) */}
+                          <td
+                            className="sticky left-0 z-10 bg-white group-hover:bg-slate-50/90 py-1 sm:py-2 px-1.5 sm:px-3 shadow-r border-r border-slate-200 transition-colors cursor-pointer"
+                            onClick={() => onSelectMember(member)}
+                          >
+                            <div className="flex items-center space-x-1.5 sm:space-x-2.5">
+                              {/* Avatar Icon: Hidden on mobile, visible on tablet & desktop */}
+                              <div className="hidden sm:flex w-6 h-6 sm:w-7 sm:h-7 rounded-full bg-slate-100 border border-slate-200 items-center justify-center text-slate-700 font-bold text-[10px] sm:text-xs shrink-0 overflow-hidden shadow-2xs">
+                                {member.avatarUrl ? (
+                                  <img
+                                    src={member.avatarUrl}
+                                    alt={member.name}
+                                    className="w-full h-full object-cover"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                ) : (
+                                  <span>{cleanBase.charAt(0)}</span>
+                                )}
                               </div>
-                              <span className="text-[8px] sm:text-3xs text-emerald-600/80 font-medium">
-                                {monthPayments[0]?.paymentMethod || 'Paid'}
-                              </span>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center space-x-1">
+                                  <p className="text-[11px] sm:text-xs md:text-sm font-bold text-slate-900 truncate hover:text-emerald-700">
+                                    {isBn ? member.nameBn || member.name : member.name}
+                                  </p>
+                                  <span className="text-[10px] sm:text-xs shrink-0" title={member.country}>
+                                    {getCountryFlag(member.country)}
+                                  </span>
+                                </div>
+                                <div className="flex items-center space-x-1 sm:space-x-2 text-[9px] sm:text-2xs text-slate-500">
+                                  <span className="truncate">{isBn ? getCountryBn(member.country) : member.country}</span>
+                                  <span>•</span>
+                                  <span className="font-semibold text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded-none whitespace-nowrap">
+                                    {formatBDT(member.monthlyShareAmount || (member.shares ? member.shares * 1000 : 1000), isBn)}/{isBn ? 'মাস' : 'mo'}
+                                  </span>
+                                </div>
+                              </div>
                             </div>
-                          ) : isPartial ? (
-                            <div
-                              onClick={() => onSelectMember(member)}
-                              className="inline-flex flex-col items-center justify-center p-0.5 sm:py-1.5 sm:px-2 rounded-md sm:rounded-lg bg-amber-50 border border-amber-200 text-amber-800 hover:bg-amber-100 transition-all cursor-pointer w-full"
-                              title={`${isBn ? 'আংশিক জমা' : 'Partial'}: ${formatBDT(monthPaid, isBn)}`}
-                            >
-                              <span className="font-bold text-[10px] sm:text-xs text-amber-700">
-                                {formatBDT(monthPaid, isBn)}
-                              </span>
-                              <span className="text-[8px] sm:text-3xs text-amber-600 font-semibold">{isBn ? 'আংশিক' : 'Partial'}</span>
+                          </td>
+
+                          {/* 12 Month Cells (Scrollable) */}
+                          {MONTHS.map((m) => {
+                            const monthPayments = monthMap?.get(m.id) || [];
+                            const monthPaid = monthPayments.reduce((s, p) => s + (p.amount || 0), 0);
+                            memberTotalYearPaid += monthPaid;
+
+                            const requiredDue = member.monthlyShareAmount || (member.shares ? member.shares * 1000 : 1000);
+                            const isFullPaid = monthPaid >= requiredDue;
+                            const isPartial = monthPaid > 0 && monthPaid < requiredDue;
+
+                            const isRunning = selectedYear === currentRealYear && m.id === currentRealMonth;
+
+                            return (
+                              <td
+                                key={m.id}
+                                className={`py-1 sm:py-2 px-0.5 sm:px-1 text-center border-l border-slate-100 transition-colors ${
+                                  isRunning ? 'bg-emerald-50/30' : ''
+                                }`}
+                              >
+                                {isFullPaid ? (
+                                  <div
+                                    onClick={() => onSelectMember(member)}
+                                    className="inline-flex flex-col items-center justify-center p-0.5 sm:py-1 sm:px-1.5 rounded-none bg-emerald-50/90 border border-emerald-200/80 text-emerald-800 hover:bg-emerald-100 transition-all cursor-pointer w-full"
+                                    title={`${isBn ? m.nameBn : m.nameEn}: ${formatBDT(monthPaid, isBn)} (${monthPayments[0]?.paymentMethod || 'Paid'})`}
+                                  >
+                                    <div className="flex items-center space-x-0.5">
+                                      <CheckCircle2 className="w-2.5 h-2.5 sm:w-3.5 sm:h-3.5 text-emerald-600 shrink-0" />
+                                      <span className="font-bold text-[10px] sm:text-xs">
+                                        {formatBDT(monthPaid, isBn)}
+                                      </span>
+                                    </div>
+                                    <span className="text-[8px] sm:text-3xs text-emerald-600/80 font-medium">
+                                      {monthPayments[0]?.paymentMethod || 'Paid'}
+                                    </span>
+                                  </div>
+                                ) : isPartial ? (
+                                  <div
+                                    onClick={() => onSelectMember(member)}
+                                    className="inline-flex flex-col items-center justify-center p-0.5 sm:py-1 sm:px-1.5 rounded-none bg-amber-50 border border-amber-200 text-amber-800 hover:bg-amber-100 transition-all cursor-pointer w-full"
+                                    title={`${isBn ? 'আংশিক জমা' : 'Partial'}: ${formatBDT(monthPaid, isBn)}`}
+                                  >
+                                    <span className="font-bold text-[10px] sm:text-xs text-amber-700">
+                                      {formatBDT(monthPaid, isBn)}
+                                    </span>
+                                    <span className="text-[8px] sm:text-3xs text-amber-600 font-semibold">{isBn ? 'আংশিক' : 'Partial'}</span>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center justify-center py-1.5 group/cell">
+                                    {isAdmin && onOpenAddPaymentForMember ? (
+                                      <button
+                                        onClick={() => onOpenAddPaymentForMember(member.id, m.id, selectedYear)}
+                                        className="opacity-0 group-hover/cell:opacity-100 text-[10px] px-1 py-0.5 rounded-none bg-slate-100 hover:bg-emerald-600 hover:text-white text-slate-600 font-medium transition-all cursor-pointer"
+                                        title={isBn ? 'সঞ্চয় জমা দিন' : 'Add Payment'}
+                                      >
+                                        + {isBn ? 'জমা' : 'Pay'}
+                                      </button>
+                                    ) : (
+                                      <span className="text-slate-300 text-[10px] select-none">—</span>
+                                    )}
+                                  </div>
+                                )}
+                              </td>
+                            );
+                          })}
+
+                          {/* Total Summary Cell for Member (Right Frozen) - Balanced padding on mobile */}
+                          <td
+                            className="sticky right-0 z-10 bg-white group-hover:bg-slate-50/90 py-1 sm:py-2 px-1 sm:px-3 text-right border-l-2 border-slate-200 shadow-l transition-colors cursor-pointer"
+                            onClick={() => onSelectMember(member)}
+                          >
+                            <div className="space-y-0.5">
+                              <div className="font-extrabold text-[10.5px] sm:text-xs md:text-sm text-slate-900 leading-tight">
+                                {formatBDT(memberTotalYearPaid, isBn)}
+                              </div>
+                              <div className="flex items-center justify-end space-x-1">
+                                {memberTotalYearPaid >= yearlyTarget ? (
+                                  <span className="inline-flex items-center px-1 sm:px-1.5 py-0.5 rounded-none text-[8px] sm:text-3xs font-bold bg-emerald-100 text-emerald-800 leading-none">
+                                    ✓ {isBn ? 'সম্পূর্ণ' : '100%'}
+                                  </span>
+                                ) : (
+                                  <span className="text-[8px] sm:text-3xs font-semibold text-slate-500 leading-none">
+                                    {isBn ? `${toBengaliNumerals(Math.round((memberTotalYearPaid / yearlyTarget) * 100))}% আদায়` : `${Math.round((memberTotalYearPaid / yearlyTarget) * 100)}%`}
+                                  </span>
+                                )}
+                              </div>
                             </div>
-                          ) : (
-                            <div className="flex items-center justify-center py-1.5 group/cell">
-                              {isAdmin && onOpenAddPaymentForMember ? (
-                                <button
-                                  onClick={() => onOpenAddPaymentForMember(member.id, m.id, selectedYear)}
-                                  className="opacity-0 group-hover/cell:opacity-100 text-[10px] px-1 py-0.5 rounded bg-slate-100 hover:bg-emerald-600 hover:text-white text-slate-600 font-medium transition-all"
-                                  title={isBn ? 'সঞ্চয় জমা দিন' : 'Add Payment'}
-                                >
-                                  + {isBn ? 'জমা' : 'Pay'}
-                                </button>
-                              ) : (
-                                <span className="text-slate-300 text-[10px] select-none">—</span>
-                              )}
-                            </div>
-                          )}
-                        </td>
+                          </td>
+
+                        </tr>
                       );
                     })}
-
-                    {/* Total Summary Cell for Member */}
-                    <td
-                      className="sticky right-0 z-10 bg-white group-hover:bg-slate-50/90 py-2 sm:py-3 px-2 sm:px-4 text-right border-l-2 border-slate-200 shadow-l transition-colors cursor-pointer"
-                      onClick={() => onSelectMember(member)}
-                    >
-                      <div className="space-y-0.5">
-                        <div className="font-extrabold text-[11px] sm:text-xs md:text-sm text-slate-900">
-                          {formatBDT(memberTotalYearPaid, isBn)}
-                        </div>
-                        <div className="flex items-center justify-end space-x-1">
-                          {memberTotalYearPaid >= yearlyTarget ? (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[8.5px] sm:text-3xs font-bold bg-emerald-100 text-emerald-800">
-                              ✓ {isBn ? 'সম্পূর্ণ' : '100%'}
-                            </span>
-                          ) : (
-                            <span className="text-[8.5px] sm:text-3xs font-semibold text-slate-500">
-                              {isBn ? `${toBengaliNumerals(Math.round((memberTotalYearPaid / yearlyTarget) * 100))}% আদায়` : `${Math.round((memberTotalYearPaid / yearlyTarget) * 100)}%`}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </td>
-
-                  </tr>
+                  </React.Fragment>
                 );
               })
             )}
@@ -663,10 +864,10 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
           {/* Table Footer: Total for each month */}
           <tfoot>
             <tr className="bg-slate-900 text-white font-bold border-t-2 border-slate-800">
-              <td className="sticky left-0 z-20 bg-slate-900 py-2.5 sm:py-3.5 px-2.5 sm:px-4 shadow-r">
+              <td className="sticky left-0 z-20 bg-slate-900 py-1.5 sm:py-2.5 px-1.5 sm:px-3 shadow-r border-r border-slate-800">
                 <div className="flex items-center justify-between text-[11px] sm:text-xs md:text-sm">
                   <span>{isBn ? 'সর্বমোট প্রাপ্তি:' : 'Fund Total:'}</span>
-                  <span className="text-[9px] sm:text-2xs text-emerald-400 font-normal uppercase">
+                  <span className="text-[9px] sm:text-2xs text-emerald-400 font-normal uppercase hidden sm:inline">
                     {isBn ? `${toBengaliNumerals(selectedYear)}` : `${selectedYear}`}
                   </span>
                 </div>
@@ -678,7 +879,7 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
                 return (
                   <td
                     key={m.id}
-                    className={`py-2.5 px-0.5 sm:px-1.5 text-center text-[10px] sm:text-xs border-l border-slate-800 transition-colors ${
+                    className={`py-1.5 sm:py-2 px-0.5 sm:px-1 text-center text-[10px] sm:text-xs border-l border-slate-800 transition-colors ${
                       isRunning ? 'bg-emerald-950/80 text-emerald-200' : ''
                     }`}
                   >
@@ -689,11 +890,11 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
                 );
               })}
 
-              <td className="sticky right-0 z-20 bg-slate-900 py-2.5 sm:py-3.5 px-2.5 sm:px-4 text-right border-l-2 border-slate-800 shadow-l">
-                <div className="text-[11px] sm:text-xs md:text-sm text-emerald-400 font-black">
+              <td className="sticky right-0 z-20 bg-slate-900 py-1.5 sm:py-2.5 px-1 sm:px-3 text-right border-l-2 border-slate-800 shadow-l">
+                <div className="text-[10.5px] sm:text-xs md:text-sm text-emerald-400 font-black leading-tight">
                   {formatBDT(grandYearTotal, isBn)}
                 </div>
-                <div className="text-[8.5px] sm:text-3xs text-slate-400 font-normal">
+                <div className="text-[8px] sm:text-3xs text-slate-400 font-normal leading-tight">
                   {isBn ? 'বাৎসরিক মোট' : 'Grand Total'}
                 </div>
               </td>

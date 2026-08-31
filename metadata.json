@@ -1,6 +1,6 @@
 {
   "name": "Udbhob (উদ্ভব)",
   "description": "Udbhob (উদ্ভব) - বিনিয়োগে গড়ি নতুন সম্ভাবনা: Diaspora savings, fund management, and WhatsApp/Messenger-style real-time community chat application with zero-loading offline persistence.",
-  "requestFramePermissions": ["camera", "microphone"],
+  "requestFramePermissions": ["camera", "microphone", "geolocation"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

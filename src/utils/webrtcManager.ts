@@ -15,6 +15,19 @@ const RTC_CONFIG: RTCConfiguration = {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:global.stun.twilio.com:3478' },
+    { urls: 'stun:stun.services.mozilla.com' },
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+      ],
+      username: 'openrelay',
+      credential: 'openrelay',
+    },
   ],
   iceCandidatePoolSize: 10,
 };
@@ -52,9 +65,9 @@ export class WebRTCManager {
           type === 'video'
             ? {
                 facingMode: cameraFacing,
-                width: { ideal: 1280, max: 1920 },
-                height: { ideal: 720, max: 1080 },
-                frameRate: { ideal: 30, max: 30 },
+                width: { ideal: 640, max: 1280 },
+                height: { ideal: 480, max: 720 },
+                frameRate: { ideal: 24, max: 30 },
               }
             : false,
       };
@@ -69,8 +82,8 @@ export class WebRTCManager {
         return stream;
       }
     } catch (err) {
-      console.warn('WebRTC getUserMedia failed or was denied:', err);
-      // Fallback: try standard video or audio only if initial high-res failed
+      console.warn('WebRTC getUserMedia initial attempt failed:', err);
+      // Fallback 1: Try flexible video constraints
       if (type === 'video') {
         try {
           const fallbackStream = await navigator.mediaDevices.getUserMedia({
@@ -84,16 +97,31 @@ export class WebRTCManager {
           this.setupAudioAnalysis(fallbackStream);
           return fallbackStream;
         } catch {
+          // Fallback 2: Any video and audio
           try {
-            const audioOnlyStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            this.localStream = audioOnlyStream;
+            const anyVideoStream = await navigator.mediaDevices.getUserMedia({
+              video: true,
+              audio: true,
+            });
+            this.localStream = anyVideoStream;
             if (this.onLocalStreamCallback) {
-              this.onLocalStreamCallback(audioOnlyStream);
+              this.onLocalStreamCallback(anyVideoStream);
             }
-            this.setupAudioAnalysis(audioOnlyStream);
-            return audioOnlyStream;
+            this.setupAudioAnalysis(anyVideoStream);
+            return anyVideoStream;
           } catch {
-            // ignore
+            // Fallback 3: Audio only if video is completely blocked/missing
+            try {
+              const audioOnlyStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+              this.localStream = audioOnlyStream;
+              if (this.onLocalStreamCallback) {
+                this.onLocalStreamCallback(audioOnlyStream);
+              }
+              this.setupAudioAnalysis(audioOnlyStream);
+              return audioOnlyStream;
+            } catch {
+              // ignore
+            }
           }
         }
       }
@@ -106,6 +134,9 @@ export class WebRTCManager {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
 
+      const audioTracks = stream.getAudioTracks();
+      if (!audioTracks || audioTracks.length === 0) return;
+
       this.audioContext = new AudioCtx();
       const source = this.audioContext.createMediaStreamSource(stream);
       this.analyser = this.audioContext.createAnalyser();
@@ -116,7 +147,6 @@ export class WebRTCManager {
 
       const checkVolume = (timestamp: number) => {
         if (this.analyser && this.audioMeterCallback) {
-          // Throttle to max 12 updates per second (~80ms) for high performance without jitter
           if (timestamp - this.lastMeterTime > 80) {
             this.lastMeterTime = timestamp;
             this.analyser.getByteFrequencyData(dataArray);
@@ -125,7 +155,7 @@ export class WebRTCManager {
               sum += dataArray[i];
             }
             const avg = sum / dataArray.length;
-            this.audioMeterCallback(avg / 128); // 0.0 to 2.0 scale
+            this.audioMeterCallback(avg / 128);
           }
         }
         this.audioMeterAnimationId = requestAnimationFrame(checkVolume);
@@ -173,7 +203,7 @@ export class WebRTCManager {
     this.onRemoteStreamCallback = onRemoteStream;
 
     const stream = await this.getLocalMedia(type);
-    if (!window.RTCPeerConnection) return stream;
+    if (typeof window === 'undefined' || !window.RTCPeerConnection) return stream;
 
     try {
       const pc = new RTCPeerConnection(RTC_CONFIG);
@@ -184,29 +214,51 @@ export class WebRTCManager {
         this.onRemoteStreamCallback(this.remoteStream);
       }
 
-      // Add local tracks
+      // Add local media tracks
       if (stream) {
         stream.getTracks().forEach((track) => {
           pc.addTrack(track, stream);
         });
       }
 
-      // Remote tracks received
+      // Ensure video receiver transceiver is created if doing video call
+      if (type === 'video') {
+        const hasVideoTrack = stream?.getVideoTracks().length;
+        if (!hasVideoTrack) {
+          try {
+            pc.addTransceiver('video', { direction: 'recvonly' });
+          } catch {}
+        }
+      }
+
+      // Handle remote incoming tracks (both video & audio)
       pc.ontrack = (event) => {
-        event.streams[0].getTracks().forEach((track) => {
-          if (this.remoteStream && !this.remoteStream.getTracks().some((t) => t.id === track.id)) {
-            this.remoteStream.addTrack(track);
+        if (!this.remoteStream) {
+          this.remoteStream = new MediaStream();
+        }
+
+        if (event.streams && event.streams[0]) {
+          event.streams[0].getTracks().forEach((track) => {
+            if (!this.remoteStream!.getTracks().some((t) => t.id === track.id)) {
+              this.remoteStream!.addTrack(track);
+            }
+          });
+        } else if (event.track) {
+          if (!this.remoteStream.getTracks().some((t) => t.id === event.track.id)) {
+            this.remoteStream.addTrack(event.track);
           }
-        });
+        }
+
         if (this.onRemoteStreamCallback && this.remoteStream) {
           this.onRemoteStreamCallback(this.remoteStream);
         }
       };
 
-      // Push ICE candidates to Firestore
       const callDocRef = doc(db, 'active_calls', callId);
       const callerCandidatesCol = collection(callDocRef, 'callerCandidates');
+      const pendingRemoteCandidates: RTCIceCandidateInit[] = [];
 
+      // Stream local ICE candidates to Firestore
       pc.onicecandidate = (event) => {
         if (event.candidate) {
           addDoc(callerCandidatesCol, event.candidate.toJSON()).catch((err) => {
@@ -227,31 +279,48 @@ export class WebRTCManager {
         type: offerDescription.type,
       };
 
-      await updateDoc(callDocRef, { offer });
+      await updateDoc(callDocRef, { offer }).catch((err) => {
+        console.warn('Error updating offer in Firestore:', err);
+      });
 
       // Listen for Answer SDP from Callee
-      this.unsubDoc = onSnapshot(callDocRef, (snapshot) => {
+      this.unsubDoc = onSnapshot(callDocRef, async (snapshot) => {
         const data = snapshot.data();
-        if (!pc.currentRemoteDescription && data?.answer) {
-          const answerDescription = new RTCSessionDescription(data.answer);
-          pc.setRemoteDescription(answerDescription).catch((err) => {
+        if (data?.answer && !pc.currentRemoteDescription) {
+          try {
+            const answerDescription = new RTCSessionDescription(data.answer);
+            await pc.setRemoteDescription(answerDescription);
+
+            // Flush buffered ICE candidates
+            while (pendingRemoteCandidates.length > 0) {
+              const cand = pendingRemoteCandidates.shift();
+              if (cand) {
+                await pc.addIceCandidate(new RTCIceCandidate(cand)).catch(() => {});
+              }
+            }
+          } catch (err) {
             console.warn('Error setting remote description on caller:', err);
-          });
+          }
         }
       });
 
       // Listen for Callee ICE candidates
       const calleeCandidatesCol = collection(callDocRef, 'calleeCandidates');
-      this.unsubCalleeCandidates = onSnapshot(calleeCandidatesCol, (snapshot) => {
-        snapshot.docChanges().forEach((change) => {
+      this.unsubCalleeCandidates = onSnapshot(calleeCandidatesCol, async (snapshot) => {
+        for (const change of snapshot.docChanges()) {
           if (change.type === 'added') {
-            const data = change.doc.data();
-            const candidate = new RTCIceCandidate(data);
-            pc.addIceCandidate(candidate).catch((err) => {
-              console.warn('Error adding callee candidate:', err);
-            });
+            const data = change.doc.data() as RTCIceCandidateInit;
+            if (pc.currentRemoteDescription && pc.currentRemoteDescription.type) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(data));
+              } catch (err) {
+                console.warn('Error adding callee candidate:', err);
+              }
+            } else {
+              pendingRemoteCandidates.push(data);
+            }
           }
-        });
+        }
       });
     } catch (err) {
       console.warn('WebRTC startCaller error:', err);
@@ -270,7 +339,7 @@ export class WebRTCManager {
     this.onRemoteStreamCallback = onRemoteStream;
 
     const stream = await this.getLocalMedia(type);
-    if (!window.RTCPeerConnection) return stream;
+    if (typeof window === 'undefined' || !window.RTCPeerConnection) return stream;
 
     try {
       const pc = new RTCPeerConnection(RTC_CONFIG);
@@ -281,20 +350,41 @@ export class WebRTCManager {
         this.onRemoteStreamCallback(this.remoteStream);
       }
 
-      // Add local tracks
+      // Add local media tracks
       if (stream) {
         stream.getTracks().forEach((track) => {
           pc.addTrack(track, stream);
         });
       }
 
-      // Remote tracks received
+      // Ensure video receiver transceiver is created if doing video call
+      if (type === 'video') {
+        const hasVideoTrack = stream?.getVideoTracks().length;
+        if (!hasVideoTrack) {
+          try {
+            pc.addTransceiver('video', { direction: 'recvonly' });
+          } catch {}
+        }
+      }
+
+      // Handle remote incoming tracks (both video & audio)
       pc.ontrack = (event) => {
-        event.streams[0].getTracks().forEach((track) => {
-          if (this.remoteStream && !this.remoteStream.getTracks().some((t) => t.id === track.id)) {
-            this.remoteStream.addTrack(track);
+        if (!this.remoteStream) {
+          this.remoteStream = new MediaStream();
+        }
+
+        if (event.streams && event.streams[0]) {
+          event.streams[0].getTracks().forEach((track) => {
+            if (!this.remoteStream!.getTracks().some((t) => t.id === track.id)) {
+              this.remoteStream!.addTrack(track);
+            }
+          });
+        } else if (event.track) {
+          if (!this.remoteStream.getTracks().some((t) => t.id === event.track.id)) {
+            this.remoteStream.addTrack(event.track);
           }
-        });
+        }
+
         if (this.onRemoteStreamCallback && this.remoteStream) {
           this.onRemoteStreamCallback(this.remoteStream);
         }
@@ -302,7 +392,9 @@ export class WebRTCManager {
 
       const callDocRef = doc(db, 'active_calls', callId);
       const calleeCandidatesCol = collection(callDocRef, 'calleeCandidates');
+      const pendingRemoteCandidates: RTCIceCandidateInit[] = [];
 
+      // Stream local ICE candidates to Firestore
       pc.onicecandidate = (event) => {
         if (event.candidate) {
           addDoc(calleeCandidatesCol, event.candidate.toJSON()).catch((err) => {
@@ -311,38 +403,72 @@ export class WebRTCManager {
         }
       };
 
-      // Get Offer SDP from caller
+      let answerCreated = false;
+
+      const handleRemoteOffer = async (offerDescription: any) => {
+        if (answerCreated || pc.currentRemoteDescription || !offerDescription) return;
+        try {
+          answerCreated = true;
+          await pc.setRemoteDescription(new RTCSessionDescription(offerDescription));
+
+          // Flush any buffered candidates
+          while (pendingRemoteCandidates.length > 0) {
+            const cand = pendingRemoteCandidates.shift();
+            if (cand) {
+              await pc.addIceCandidate(new RTCIceCandidate(cand)).catch(() => {});
+            }
+          }
+
+          // Create Answer SDP
+          const answerDescription = await pc.createAnswer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: type === 'video',
+          });
+          await pc.setLocalDescription(answerDescription);
+
+          const answer = {
+            type: answerDescription.type,
+            sdp: answerDescription.sdp,
+          };
+
+          await updateDoc(callDocRef, { answer, status: 'connected' });
+        } catch (err) {
+          console.warn('Error handling remote offer on callee:', err);
+          answerCreated = false;
+        }
+      };
+
+      // Check if offer is already available
       const callDocSnap = await getDoc(callDocRef);
-      const callData = callDocSnap.data();
-      const offerDescription = callData?.offer;
-
-      if (offerDescription) {
-        await pc.setRemoteDescription(new RTCSessionDescription(offerDescription));
-
-        // Create Answer SDP
-        const answerDescription = await pc.createAnswer();
-        await pc.setLocalDescription(answerDescription);
-
-        const answer = {
-          type: answerDescription.type,
-          sdp: answerDescription.sdp,
-        };
-
-        await updateDoc(callDocRef, { answer, status: 'connected' });
+      if (callDocSnap.exists() && callDocSnap.data()?.offer) {
+        await handleRemoteOffer(callDocSnap.data()?.offer);
       }
+
+      // Realtime listener for offer in case of network latency
+      this.unsubDoc = onSnapshot(callDocRef, async (snapshot) => {
+        const data = snapshot.data();
+        if (data?.offer && !pc.currentRemoteDescription) {
+          await handleRemoteOffer(data.offer);
+        }
+      });
 
       // Listen for Caller ICE candidates
       const callerCandidatesCol = collection(callDocRef, 'callerCandidates');
-      this.unsubCallerCandidates = onSnapshot(callerCandidatesCol, (snapshot) => {
-        snapshot.docChanges().forEach((change) => {
+      this.unsubCallerCandidates = onSnapshot(callerCandidatesCol, async (snapshot) => {
+        for (const change of snapshot.docChanges()) {
           if (change.type === 'added') {
-            const data = change.doc.data();
-            const candidate = new RTCIceCandidate(data);
-            pc.addIceCandidate(candidate).catch((err) => {
-              console.warn('Error adding caller candidate:', err);
-            });
+            const data = change.doc.data() as RTCIceCandidateInit;
+            if (pc.currentRemoteDescription && pc.currentRemoteDescription.type) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(data));
+              } catch (err) {
+                console.warn('Error adding caller candidate on callee:', err);
+              }
+            } else {
+              pendingRemoteCandidates.push(data);
+            }
           }
-        });
+        }
       });
     } catch (err) {
       console.warn('WebRTC startCallee error:', err);

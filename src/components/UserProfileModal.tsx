@@ -51,7 +51,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
   onOpenAuthModal,
   language,
 }) => {
-  const { currentMember, userSession, isAdmin, updateUserAvatar, updateUserProfile, changeMemberPassword, logout } = useAuth();
+  const { currentUser, currentMember, userSession, isAdmin, updateUserAvatar, updateUserProfile, changeUserPassword, logout } = useAuth();
   const { updateMember } = useFund();
 
   const isBn = language === 'bn';
@@ -67,8 +67,12 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
   const [country, setCountry] = useState<string>(currentMember?.country || 'Saudi Arabia');
   
   // Password State
+  const [currentPassword, setCurrentPassword] = useState<string>('');
   const [newPassword, setNewPassword] = useState<string>('');
-  const [showPassword, setShowPassword] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState<string>('');
+  const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [passwordChangeSuccess, setPasswordChangeSuccess] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const [isChangingPass, setIsChangingPass] = useState(false);
@@ -169,8 +173,14 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in">
-      <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in cursor-pointer"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh] cursor-default"
+        onClick={(e) => e.stopPropagation()}
+      >
         
         {/* Header */}
         <div className="px-5 py-4 bg-gradient-to-r from-emerald-800 to-teal-900 text-white flex items-center justify-between shrink-0">
@@ -385,91 +395,217 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
             </div>
           </div>
 
-          {/* Member Password Change Section (Self-Service) */}
-          <div className="p-3.5 bg-gradient-to-r from-slate-900 via-slate-800 to-emerald-950 text-white rounded-2xl border border-emerald-900/40 shadow-xs">
-            <div className="flex items-center justify-between mb-2">
+          {/* Password Change Section (Self-Service with Current Password Verification) */}
+          <div className="p-4 bg-gradient-to-br from-slate-900 via-slate-800 to-emerald-950 text-white rounded-2xl border border-emerald-900/50 shadow-md">
+            <div className="flex items-center justify-between mb-3 pb-2.5 border-b border-white/10">
               <div className="flex items-center space-x-2">
-                <div className="w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 border border-emerald-500/30">
-                  <KeyRound className="w-3.5 h-3.5" />
+                <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 border border-emerald-500/30 shadow-inner">
+                  <KeyRound className="w-4 h-4" />
                 </div>
                 <div>
-                  <h4 className="text-2xs font-bold text-white">
-                    {isBn ? 'লগইন পাসওয়ার্ড পরিবর্তন' : 'Change Login Password'}
+                  <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                    <span>{isBn ? 'লগইন পাসওয়ার্ড পরিবর্তন' : 'Change Login Password'}</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-md bg-emerald-500/20 text-emerald-300 font-semibold border border-emerald-500/30">
+                      {isAdmin ? (isBn ? '🛡️ এডমিন' : 'Admin') : (isBn ? '👤 সদস্য' : 'Member')}
+                    </span>
                   </h4>
                   <p className="text-3xs text-emerald-200/70">
-                    {isBn ? 'নতুন পাসওয়ার্ড দিলে এডমিন পোর্টালেও আপডেট হবে' : 'Synced with Admin Portal in real-time'}
+                    {currentMember?.username ? (
+                      <span>ইউজারনেম: <strong className="text-white font-mono">@{currentMember.username}</strong></span>
+                    ) : userSession?.email ? (
+                      <span>ইমেইল: <strong className="text-white font-mono">{userSession.email}</strong></span>
+                    ) : (
+                      isBn ? 'বর্তমান পাসওয়ার্ড নিশ্চিত করে নতুন পাসওয়ার্ড সেট করুন' : 'Verify current password and set new password'
+                    )}
                   </p>
                 </div>
               </div>
-              {currentMember?.passwordPlain && (
-                <span className="text-3xs font-mono bg-white/10 px-2 py-0.5 rounded text-emerald-300">
-                  {isBn ? 'বর্তমান:' : 'Current:'} {currentMember.passwordPlain}
-                </span>
+            </div>
+
+            {!currentMember && !userSession && (!currentUser || currentUser.isAnonymous) ? (
+              <div className="p-3 bg-amber-500/10 border border-amber-400/30 rounded-xl text-center space-y-2">
+                <p className="text-2xs text-amber-200">
+                  {isBn
+                    ? '⚠️ পাসওয়ার্ড পরিবর্তন করতে অনুগ্রহ করে প্রথমে আপনার একাউন্টে লগইন করুন।'
+                    : '⚠️ Please login to your account to change your password.'}
+                </p>
+                {onOpenAuthModal && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenAuthModal();
+                    }}
+                    className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer inline-flex items-center gap-1.5"
+                  >
+                    <User className="w-3.5 h-3.5" />
+                    <span>{isBn ? 'লগইন করুন' : 'Login Now'}</span>
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {/* Current Password Field */}
+                <div>
+                  <label className="block text-3xs font-bold text-slate-300 mb-1">
+                    {isBn ? '১. বর্তমান পাসওয়ার্ড (Current Password) *' : '1. Current Password *'}
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showCurrentPassword ? 'text' : 'password'}
+                      value={currentPassword}
+                      onChange={(e) => {
+                        setCurrentPassword(e.target.value);
+                        setPasswordError(null);
+                        setPasswordChangeSuccess(false);
+                      }}
+                      placeholder={isBn ? 'আপনার বর্তমান পাসওয়ার্ড লিখুন (ডিফল্ট: 123456)' : 'Enter your current password'}
+                      className="w-full pl-8 pr-8 py-2 bg-white/10 border border-white/15 rounded-xl text-white placeholder-slate-400 text-xs font-mono focus:bg-white/20 focus:border-emerald-400 outline-none transition-all"
+                    />
+                    <Lock className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                    <button
+                      type="button"
+                      onClick={() => setShowCurrentPassword(!showCurrentPassword)}
+                      className="absolute right-2.5 top-2.5 text-slate-400 hover:text-white cursor-pointer"
+                      title={showCurrentPassword ? 'Hide password' : 'Show password'}
+                    >
+                      {showCurrentPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+
+                {/* New Password & Confirm Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-3xs font-bold text-slate-300 mb-1">
+                      {isBn ? '২. নতুন পাসওয়ার্ড (New Password) *' : '2. New Password *'}
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showNewPassword ? 'text' : 'password'}
+                        value={newPassword}
+                        onChange={(e) => {
+                          setNewPassword(e.target.value);
+                          setPasswordError(null);
+                          setPasswordChangeSuccess(false);
+                        }}
+                        placeholder={isBn ? 'কমপক্ষে ৬ অক্ষর' : 'Min 6 chars'}
+                        className="w-full pl-8 pr-8 py-2 bg-white/10 border border-white/15 rounded-xl text-white placeholder-slate-400 text-xs font-mono focus:bg-white/20 focus:border-emerald-400 outline-none transition-all"
+                      />
+                      <Lock className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                      <button
+                        type="button"
+                        onClick={() => setShowNewPassword(!showNewPassword)}
+                        className="absolute right-2.5 top-2.5 text-slate-400 hover:text-white cursor-pointer"
+                        title={showNewPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showNewPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-3xs font-bold text-slate-300 mb-1">
+                      {isBn ? '৩. নতুন পাসওয়ার্ড নিশ্চিতকরণ *' : '3. Confirm New Password *'}
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showConfirmPassword ? 'text' : 'password'}
+                        value={confirmPassword}
+                        onChange={(e) => {
+                          setConfirmPassword(e.target.value);
+                          setPasswordError(null);
+                          setPasswordChangeSuccess(false);
+                        }}
+                        placeholder={isBn ? 'পুনরায় নতুন পাসওয়ার্ড' : 'Repeat new password'}
+                        className="w-full pl-8 pr-8 py-2 bg-white/10 border border-white/15 rounded-xl text-white placeholder-slate-400 text-xs font-mono focus:bg-white/20 focus:border-emerald-400 outline-none transition-all"
+                      />
+                      <Check className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                        className="absolute right-2.5 top-2.5 text-slate-400 hover:text-white cursor-pointer"
+                        title={showConfirmPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showConfirmPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Password Action Button */}
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    disabled={isChangingPass || !currentPassword.trim() || !newPassword.trim()}
+                    onClick={async () => {
+                      if (!currentPassword.trim()) {
+                        setPasswordError(isBn ? 'অনুগ্রহ করে বর্তমান পাসওয়ার্ডটি লিখুন।' : 'Please enter current password.');
+                        return;
+                      }
+                      if (!newPassword.trim()) {
+                        setPasswordError(isBn ? 'অনুগ্রহ করে নতুন পাসওয়ার্ডটি লিখুন।' : 'Please enter new password.');
+                        return;
+                      }
+                      if (newPassword.trim().length < 6) {
+                        setPasswordError(isBn ? 'নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।' : 'New password must be at least 6 characters.');
+                        return;
+                      }
+                      if (confirmPassword.trim() && newPassword.trim() !== confirmPassword.trim()) {
+                        setPasswordError(isBn ? 'নতুন পাসওয়ার্ড ও নিশ্চিতকরণ পাসওয়ার্ড মিলছে না!' : 'New passwords do not match.');
+                        return;
+                      }
+
+                      setIsChangingPass(true);
+                      setPasswordError(null);
+                      setPasswordChangeSuccess(false);
+
+                      try {
+                        await changeUserPassword(currentPassword.trim(), newPassword.trim());
+                        if (currentMember?.id) {
+                          await updateMember(currentMember.id, { passwordPlain: newPassword.trim() });
+                        }
+                        setPasswordChangeSuccess(true);
+                        setCurrentPassword('');
+                        setNewPassword('');
+                        setConfirmPassword('');
+                        setTimeout(() => setPasswordChangeSuccess(false), 5000);
+                      } catch (err: any) {
+                        setPasswordError(err.message || (isBn ? 'পাসওয়ার্ড পরিবর্তনে সমস্যা হয়েছে।' : 'Failed to change password.'));
+                      } finally {
+                        setIsChangingPass(false);
+                      }
+                    }}
+                    className="w-full py-2 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:hover:bg-emerald-600 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    {isChangingPass ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>{isBn ? 'যাচাই ও আপডেট হচ্ছে...' : 'Verifying & Updating...'}</span>
+                      </>
+                    ) : (
+                      <>
+                        <Shield className="w-3.5 h-3.5" />
+                        <span>{isBn ? 'বর্তমান পাসওয়ার্ড যাচাই করে পাসওয়ার্ড পরিবর্তন করুন' : 'Verify & Change Password'}</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {passwordError && (
+                  <div className="p-2 rounded-xl bg-rose-500/20 border border-rose-500/40 text-rose-300 text-3xs font-medium flex items-center gap-1.5 animate-in fade-in">
+                  <X className="w-3.5 h-3.5 shrink-0 text-rose-400" />
+                  <span>{passwordError}</span>
+                </div>
+              )}
+
+              {passwordChangeSuccess && (
+                <div className="p-2.5 rounded-xl bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-3xs font-medium flex items-center gap-1.5 animate-in fade-in">
+                  <Check className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
+                  <span>{isBn ? '✅ অভিনন্দন! আপনার পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে।' : '✅ Success! Your password has been changed.'}</span>
+                </div>
               )}
             </div>
-
-            <div className="flex gap-2">
-              <div className="relative flex-1">
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  value={newPassword}
-                  onChange={(e) => {
-                    setNewPassword(e.target.value);
-                    setPasswordError(null);
-                    setPasswordChangeSuccess(false);
-                  }}
-                  placeholder={isBn ? 'নতুন পাসওয়ার্ড লিখুন (যেমন: 123456)' : 'New password (e.g. 123456)'}
-                  className="w-full pl-8 pr-8 py-2 bg-white/10 border border-white/15 rounded-xl text-white placeholder-slate-400 text-xs font-mono focus:bg-white/20 focus:border-emerald-400 outline-none"
-                />
-                <Lock className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-2.5 top-2.5 text-slate-400 hover:text-white cursor-pointer"
-                >
-                  {showPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-
-              <button
-                type="button"
-                disabled={isChangingPass || !newPassword.trim()}
-                onClick={async () => {
-                  if (!newPassword.trim()) return;
-                  setIsChangingPass(true);
-                  setPasswordError(null);
-                  try {
-                    await changeMemberPassword(newPassword.trim());
-                    if (currentMember?.id) {
-                      await updateMember(currentMember.id, { passwordPlain: newPassword.trim() });
-                    }
-                    setPasswordChangeSuccess(true);
-                    setNewPassword('');
-                  } catch (err: any) {
-                    setPasswordError(err.message || 'পাসওয়ার্ড পরিবর্তনে সমস্যা হয়েছে।');
-                  } finally {
-                    setIsChangingPass(false);
-                  }
-                }}
-                className="px-3 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all shadow-xs cursor-pointer flex items-center gap-1 shrink-0"
-              >
-                {isChangingPass ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : (
-                  <Check className="w-3.5 h-3.5" />
-                )}
-                <span>{isBn ? 'আপডেট' : 'Update'}</span>
-              </button>
-            </div>
-
-            {passwordError && (
-              <p className="text-3xs text-rose-400 mt-1 font-medium">{passwordError}</p>
-            )}
-            {passwordChangeSuccess && (
-              <p className="text-3xs text-emerald-400 mt-1 font-medium flex items-center gap-1">
-                <Check className="w-3 h-3" />
-                <span>{isBn ? 'পাসওয়ার্ড সফলভাবে পরিবর্তন করা হয়েছে!' : 'Password successfully updated!'}</span>
-              </p>
             )}
           </div>
 

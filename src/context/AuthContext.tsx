@@ -6,7 +6,9 @@ import {
   createUserWithEmailAndPassword,
   signOut,
   signInAnonymously,
-  updatePassword
+  updatePassword,
+  EmailAuthProvider,
+  reauthenticateWithCredential
 } from 'firebase/auth';
 import { collection, query, where, getDocs, doc, setDoc, getDoc, updateDoc, addDoc, limit } from 'firebase/firestore';
 import { auth, db } from '../firebase/config';
@@ -29,7 +31,8 @@ interface AuthContextType {
   loginAsDemoMember: (memberId?: string) => Promise<void>;
   updateUserAvatar: (avatarUrl: string) => Promise<void>;
   updateUserProfile: (updates: Partial<Member>) => Promise<void>;
-  changeMemberPassword: (newPassword: string) => Promise<void>;
+  changeMemberPassword: (newPassword: string, currentPassword?: string) => Promise<void>;
+  changeUserPassword: (currentPassword: string, newPassword: string) => Promise<void>;
   logout: () => Promise<void>;
   activeMemberId: string | null;
   setActiveMemberId: (id: string | null) => void;
@@ -561,7 +564,249 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const changeMemberPassword = async (newPassword: string) => {
+  const changeUserPassword = async (currentPassword: string, newPassword: string) => {
+    const cleanCurrent = currentPassword.trim();
+    const cleanNew = newPassword.trim();
+
+    if (!cleanCurrent) {
+      throw new Error('অনুগ্রহ করে আপনার বর্তমান পাসওয়ার্ডটি লিখুন।');
+    }
+    if (!cleanNew) {
+      throw new Error('অনুগ্রহ করে একটি নতুন পাসওয়ার্ড লিখুন।');
+    }
+    if (cleanNew.length < 6) {
+      throw new Error('নতুন পাসওয়ার্ড কমপক্ষে ৬ অক্ষরের হতে হবে।');
+    }
+
+    // Determine current effective session & role
+    const effectiveRole = userRole || userSession?.role || (isAdmin ? 'admin' : 'member');
+    const effectiveAdminEmail = currentUser?.email || userSession?.email || (userSession?.username?.includes('@') ? userSession.username : null);
+    const effectiveMemberId = currentMember?.id || userSession?.memberId || activeMemberId || localStorage.getItem('probashi_active_member_id');
+    const effectiveMemberUsername = currentMember?.username || userSession?.username;
+
+    // ==========================================
+    // 1. IF LOGGED IN AS ADMIN
+    // ==========================================
+    if (effectiveRole === 'admin' || isAdmin) {
+      let adminUpdated = false;
+
+      // 1.1 Try Firebase Authentication if email is available
+      if (effectiveAdminEmail) {
+        try {
+          if (currentUser && !currentUser.isAnonymous && currentUser.email === effectiveAdminEmail) {
+            const credential = EmailAuthProvider.credential(effectiveAdminEmail, cleanCurrent);
+            await reauthenticateWithCredential(currentUser, credential);
+            await updatePassword(currentUser, cleanNew);
+            adminUpdated = true;
+          } else {
+            // Sign in directly to verify current password & update
+            const userCred = await signInWithEmailAndPassword(auth, effectiveAdminEmail, cleanCurrent);
+            if (userCred.user) {
+              await updatePassword(userCred.user, cleanNew);
+              setCurrentUser(userCred.user);
+              adminUpdated = true;
+            }
+          }
+        } catch (authErr: any) {
+          if (
+            authErr.code === 'auth/wrong-password' ||
+            authErr.code === 'auth/invalid-credential'
+          ) {
+            throw new Error('বর্তমান এডমিন পাসওয়ার্ডটি সঠিক নয়! অনুগ্রহ করে সঠিক বর্তমান পাসওয়ার্ড দিন।');
+          } else if (authErr.code === 'auth/weak-password') {
+            throw new Error('নতুন পাসওয়ার্ডটি অত্যন্ত সহজ। কমপক্ষে ৬ অক্ষরের শক্তিশালী পাসওয়ার্ড দিন।');
+          }
+          console.warn('Firebase Auth admin update notice:', authErr);
+        }
+      }
+
+      // 1.2 Update / Sync in Firestore 'admins' collection
+      try {
+        const adminsRef = collection(db, 'admins');
+        let adminDocToUpdate: any = null;
+        let adminDocId: string | null = userSession?.uid || currentUser?.uid || null;
+
+        if (adminDocId) {
+          const directDoc = await getDoc(doc(db, 'admins', adminDocId));
+          if (directDoc.exists()) {
+            adminDocToUpdate = directDoc;
+          }
+        }
+
+        if (!adminDocToUpdate && effectiveAdminEmail) {
+          const q = query(adminsRef, where('email', '==', effectiveAdminEmail.toLowerCase()));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            adminDocToUpdate = snap.docs[0];
+            adminDocId = adminDocToUpdate.id;
+          }
+        }
+
+        if (adminDocToUpdate) {
+          const adminData = adminDocToUpdate.data();
+          if (!adminUpdated && adminData.passwordPlain && adminData.passwordPlain !== cleanCurrent) {
+            throw new Error('বর্তমান এডমিন পাসওয়ার্ডটি সঠিক নয়! অনুগ্রহ করে সঠিক বর্তমান পাসওয়ার্ড দিন।');
+          }
+          await updateDoc(doc(db, 'admins', adminDocId!), {
+            passwordPlain: cleanNew,
+            updatedAt: new Date().toISOString(),
+          });
+          adminUpdated = true;
+        } else if (adminDocId) {
+          // Create / set admin document record with new password
+          await setDoc(doc(db, 'admins', adminDocId), {
+            email: effectiveAdminEmail || 'admin@gmail.com',
+            name: userSession?.displayName || 'সিস্টেম এডমিন',
+            passwordPlain: cleanNew,
+            role: 'admin',
+            updatedAt: new Date().toISOString(),
+          }, { merge: true });
+          adminUpdated = true;
+        }
+      } catch (e: any) {
+        if (e.message && e.message.includes('সঠিক নয়')) {
+          throw e;
+        }
+        console.warn('Firestore admin doc update note:', e);
+      }
+
+      if (adminUpdated) {
+        return;
+      }
+    }
+
+    // ==========================================
+    // 2. IF LOGGED IN AS MEMBER (OR MEMBER RECORD LOCATED)
+    // ==========================================
+    let targetMember: Member | null = currentMember;
+    let targetMemberDocId: string | null = currentMember?.id || null;
+
+    // If not in state, look up member in Firestore
+    if (!targetMember) {
+      try {
+        const membersRef = collection(db, 'members');
+
+        // Check by ID
+        if (effectiveMemberId) {
+          const mSnap = await getDoc(doc(db, 'members', effectiveMemberId));
+          if (mSnap.exists()) {
+            targetMember = { id: mSnap.id, ...mSnap.data() } as Member;
+            targetMemberDocId = mSnap.id;
+          }
+        }
+
+        // Check by username
+        if (!targetMember && effectiveMemberUsername) {
+          const cleanU = effectiveMemberUsername.toLowerCase().replace(/^@/, '');
+          const q = query(membersRef, where('username', '==', cleanU));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            targetMember = { id: snap.docs[0].id, ...snap.docs[0].data() } as Member;
+            targetMemberDocId = snap.docs[0].id;
+          }
+        }
+
+        // Check by email or phone
+        if (!targetMember && userSession?.email) {
+          const q = query(membersRef, where('email', '==', userSession.email.toLowerCase()));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            targetMember = { id: snap.docs[0].id, ...snap.docs[0].data() } as Member;
+            targetMemberDocId = snap.docs[0].id;
+          }
+        }
+      } catch (err) {
+        console.warn('Error finding member for password change:', err);
+      }
+    }
+
+    if (targetMember && targetMemberDocId) {
+      const storedPass = (targetMember.passwordPlain || '123456').trim();
+      if (storedPass !== cleanCurrent) {
+        throw new Error(
+          `বর্তমান সদস্য পাসওয়ার্ডটি সঠিক নয়! অনুগ্রহ করে সঠিক বর্তমান পাসওয়ার্ড দিন (এডমিন থেকে প্রাপ্ত পাসওয়ার্ড বা ডিফল্ট: 123456)।`
+        );
+      }
+
+      await updateDoc(doc(db, 'members', targetMemberDocId), {
+        passwordPlain: cleanNew,
+        updatedAt: new Date().toISOString(),
+      });
+
+      const updatedMemberObj: Member = {
+        ...targetMember,
+        passwordPlain: cleanNew,
+      };
+
+      setCurrentMember(updatedMemberObj);
+      if (activeMemberId !== targetMemberDocId) {
+        setActiveMemberId(targetMemberDocId);
+      }
+
+      // If user also has a Firebase Auth email account, update Firebase Auth
+      if (currentUser && !currentUser.isAnonymous && currentUser.email) {
+        try {
+          const credential = EmailAuthProvider.credential(currentUser.email, cleanCurrent);
+          await reauthenticateWithCredential(currentUser, credential);
+          await updatePassword(currentUser, cleanNew);
+        } catch (e) {
+          console.log('Member auth pass sync note:', e);
+        }
+      }
+
+      // Post real-time notification to firestore
+      try {
+        await addDoc(collection(db, 'notifications'), cleanForFirestore({
+          fundId: targetMember.fundId || activeFundId || DEFAULT_FUND_ID,
+          adminId: targetMember.adminId || 'admin',
+          title: 'Member Password Changed',
+          titleBn: `পাসওয়ার্ড পরিবর্তন: ${targetMember.nameBn || targetMember.name}`,
+          message: `${targetMember.name} (@${targetMember.username}) changed their password from user profile.`,
+          messageBn: `${targetMember.nameBn || targetMember.name} (@${targetMember.username}) তার লগইন পাসওয়ার্ড পরিবর্তন করেছেন। এডমিন পোর্টালে নতুন পাসওয়ার্ড আপডেট হয়েছে।`,
+          type: 'member',
+          timestamp: new Date().toISOString(),
+          read: false,
+          memberId: targetMemberDocId,
+          memberName: targetMember.nameBn || targetMember.name,
+        }));
+      } catch (err) {
+        console.warn('Failed to post password update notification:', err);
+      }
+
+      return;
+    }
+
+    // ==========================================
+    // 3. DIRECT FIREBASE AUTH USER FALLBACK
+    // ==========================================
+    if (currentUser && !currentUser.isAnonymous && currentUser.email) {
+      try {
+        const credential = EmailAuthProvider.credential(currentUser.email, cleanCurrent);
+        await reauthenticateWithCredential(currentUser, credential);
+        await updatePassword(currentUser, cleanNew);
+        return;
+      } catch (authErr: any) {
+        if (
+          authErr.code === 'auth/wrong-password' ||
+          authErr.code === 'auth/invalid-credential'
+        ) {
+          throw new Error('বর্তমান পাসওয়ার্ডটি সঠিক নয়! অনুগ্রহ করে সঠিক বর্তমান পাসওয়ার্ড দিন।');
+        }
+        throw new Error(authErr.message || 'পাসওয়ার্ড পরিবর্তন ব্যর্থ হয়েছে।');
+      }
+    }
+
+    // ==========================================
+    // 4. NO ACTIVE USER OR SESSION FOUND
+    // ==========================================
+    throw new Error('পাসওয়ার্ড পরিবর্তন করতে অনুগ্রহ করে প্রথমে আপনার একাউন্টে (ইউজারনেম অথবা এডমিন ইমেইল দিয়ে) লগইন করুন।');
+  };
+
+  const changeMemberPassword = async (newPassword: string, currentPassword?: string) => {
+    if (currentPassword) {
+      await changeUserPassword(currentPassword, newPassword);
+      return;
+    }
     const cleanPass = newPassword.trim();
     if (!cleanPass) {
       throw new Error('অনুগ্রহ করে একটি নতুন পাসওয়ার্ড দিন।');
@@ -573,24 +818,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (currentMember?.id) {
       await updateDoc(doc(db, 'members', currentMember.id), { passwordPlain: cleanPass });
       setCurrentMember((prev) => (prev ? { ...prev, passwordPlain: cleanPass } : null));
-
-      // Post real-time notification to firestore
-      try {
-        await addDoc(collection(db, 'notifications'), cleanForFirestore({
-          fundId: currentMember.fundId || activeFundId || DEFAULT_FUND_ID,
-          adminId: currentMember.adminId || 'admin',
-          title: 'Member Password Changed',
-          titleBn: `পাসওয়ার্ড পরিবর্তন: ${currentMember.nameBn || currentMember.name}`,
-          message: `${currentMember.name} (@${currentMember.username}) changed their password from user profile.`,
-          messageBn: `${currentMember.nameBn || currentMember.name} (@${currentMember.username}) তার লগইন পাসওয়ার্ড পরিবর্তন করেছেন। এডমিন পোর্টালে নতুন পাসওয়ার্ড আপডেট হয়েছে।`,
-          type: 'member',
-          timestamp: new Date().toISOString(),
-          read: false,
-          metadata: { memberId: currentMember.id },
-        }));
-      } catch (err) {
-        console.warn('Failed to post password update notification:', err);
-      }
     } else if (currentUser && !currentUser.isAnonymous) {
       await updatePassword(currentUser, cleanPass);
     } else {
@@ -636,6 +863,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         updateUserAvatar,
         updateUserProfile,
         changeMemberPassword,
+        changeUserPassword,
         logout,
         activeMemberId,
         setActiveMemberId: handleSetActiveMemberId,

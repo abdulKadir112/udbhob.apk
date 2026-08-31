@@ -61,6 +61,100 @@ export function formatCustomDate(dateString?: string, useBengali = false): strin
   }
 }
 
+/**
+ * Formats a payment time string (HH:mm) or createdAt ISO string into a readable 12-hour AM/PM format
+ */
+export function formatPaymentTime(timeStr?: string, createdAt?: string, useBengali = false): string {
+  let rawTime = timeStr?.trim();
+  
+  if (!rawTime && createdAt) {
+    try {
+      const d = new Date(createdAt);
+      if (!isNaN(d.getTime())) {
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        rawTime = `${hh}:${mm}`;
+      }
+    } catch {}
+  }
+
+  if (!rawTime) {
+    return useBengali ? '—' : '—';
+  }
+
+  const parts = rawTime.split(':');
+  let hours = parseInt(parts[0], 10);
+  const minutes = parts[1] ? parts[1].slice(0, 2).padStart(2, '0') : '00';
+  
+  if (isNaN(hours)) {
+    return rawTime;
+  }
+
+  const isPM = hours >= 12;
+  const ampm = isPM ? 'PM' : 'AM';
+  const ampmBn = isPM ? 'পিএম' : 'এএম';
+  const displayHours = hours % 12 || 12;
+  const formattedHours = String(displayHours).padStart(2, '0');
+
+  if (useBengali) {
+    return `${toBengaliNumerals(formattedHours)}:${toBengaliNumerals(minutes)} ${ampmBn}`;
+  }
+  return `${formattedHours}:${minutes} ${ampm}`;
+}
+
+/**
+ * Returns a precise Unix millisecond timestamp for sorting payments from newest to oldest
+ */
+export function getPaymentSortTimestamp(p: { paymentDate?: string; paymentTime?: string; createdAt?: string }): number {
+  if (!p) return 0;
+
+  // 1. If createdAt exists and valid, it represents the exact creation epoch
+  if (p.createdAt) {
+    const epoch = new Date(p.createdAt).getTime();
+    if (!isNaN(epoch) && epoch > 0) {
+      // If paymentDate is also provided and differs in date, combine them
+      if (p.paymentDate && p.paymentTime) {
+        const fullTimeStr = p.paymentTime.length === 5 ? `${p.paymentTime}:00` : p.paymentTime;
+        const combined = new Date(`${p.paymentDate}T${fullTimeStr}`).getTime();
+        if (!isNaN(combined) && combined > 0) {
+          return combined;
+        }
+      }
+      return epoch;
+    }
+  }
+
+  // 2. Combine paymentDate and paymentTime
+  if (p.paymentDate) {
+    const timePart = p.paymentTime ? (p.paymentTime.length === 5 ? `${p.paymentTime}:00` : p.paymentTime) : '12:00:00';
+    const combined = new Date(`${p.paymentDate}T${timePart}`).getTime();
+    if (!isNaN(combined) && combined > 0) {
+      return combined;
+    }
+
+    const dateOnly = new Date(p.paymentDate).getTime();
+    if (!isNaN(dateOnly) && dateOnly > 0) {
+      return dateOnly;
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * Sorts any list of payments chronologically: Newest to Oldest (top to bottom)
+ */
+export function sortPaymentsChronologically<T extends { paymentDate?: string; paymentTime?: string; createdAt?: string; id?: string }>(
+  payments: T[]
+): T[] {
+  return [...payments].sort((a, b) => {
+    const timeA = getPaymentSortTimestamp(a);
+    const timeB = getPaymentSortTimestamp(b);
+    if (timeB !== timeA) return timeB - timeA;
+    return (b.id || '').localeCompare(a.id || '');
+  });
+}
+
 export interface CountryOption {
   code: string;
   nameEn: string;
@@ -125,6 +219,73 @@ export function getCountryFlag(countryName?: string): string {
 export function getCountryBn(countryName?: string): string {
   if (!countryName) return '';
   return COUNTRY_META[countryName]?.nameBn || countryName;
+}
+
+/**
+ * Strips title / honorific prefixes from Bengali and English names for accurate alphabetical sorting.
+ * e.g., "মোঃ আব্দুল কাদের" -> "আব্দুল কাদের", "Md. Zahid" -> "Zahid", "শ্রী সুজন কুমার" -> "সুজন কুমার"
+ */
+export function getCleanBaseName(rawName?: string): string {
+  if (!rawName) return '';
+  let n = rawName.trim();
+
+  // 1. Bengali title/honorific prefixes
+  const bnPrefixPattern = /^(মোঃ|মো:|মো\.|মোহাম্মদ|মুহাম্মদ|মুহাঃ|মুহম্মদ|মুঃ|মোসাঃ|মোসাম্মৎ|মোসাম্মত|মোসলেহ|শ্রী|শ্রীমতি|শ্রীমতী|বাবু|ডাঃ|ডাক্তার|ইঞ্জিঃ|প্রকৌশলী|মৌলভী|মাওলানা|হাজী|আলহাজ্ব|আলহাজ|অধ্যক্ষ|ড\.|অধ্যাপক|শেখ|সৈয়দ|কাজী)\s*[:.\-_]?\s*/iu;
+  
+  // 2. English title/honorific prefixes
+  const enPrefixPattern = /^(md|md\.|mohammad|mohammed|muhammad|mst|mst\.|mr|mr\.|mrs|mrs\.|miss|ms|ms\.|dr|dr\.|engr|engr\.|prof|prof\.|shri|sri|babu|adv|adv\.|haji|alhaj|al-haj|sheikh|syed|kazi)\s*[:.\-_]?\s*/iu;
+
+  // Clean iteratively in case of compound prefixes like "হাজী মোঃ ..."
+  let prev = '';
+  while (prev !== n) {
+    prev = n;
+    n = n.replace(bnPrefixPattern, '').replace(enPrefixPattern, '').trim();
+  }
+
+  return n || rawName.trim();
+}
+
+/**
+ * Compare two member names alphabetically based on their clean base name (ignoring মোঃ / Md / Sri).
+ */
+export function compareMemberBaseNames(aName?: string, bName?: string, isBn: boolean = true): number {
+  const cleanA = getCleanBaseName(aName);
+  const cleanB = getCleanBaseName(bName);
+  return cleanA.localeCompare(cleanB, isBn ? 'bn' : 'en', { sensitivity: 'base', numeric: true });
+}
+
+/**
+ * Sorts an array of members alphabetically by their core name (ignoring prefixes).
+ */
+export function sortMembersByBaseName<T extends { name: string; nameBn?: string }>(
+  members: T[],
+  isBn: boolean = true
+): T[] {
+  return [...members].sort((a, b) => {
+    const nameA = isBn ? (a.nameBn || a.name) : a.name;
+    const nameB = isBn ? (b.nameBn || b.name) : b.name;
+    return compareMemberBaseNames(nameA, nameB, isBn);
+  });
+}
+
+/**
+ * Groups and sorts members by country first, and within each country alphabetically by core name.
+ */
+export function sortMembersByCountryAndName<T extends { name: string; nameBn?: string; country?: string }>(
+  members: T[],
+  isBn: boolean = true
+): T[] {
+  return [...members].sort((a, b) => {
+    const countryA = (a.country || 'Other').trim();
+    const countryB = (b.country || 'Other').trim();
+
+    const countryComp = countryA.localeCompare(countryB, isBn ? 'bn' : 'en', { sensitivity: 'base' });
+    if (countryComp !== 0) return countryComp;
+
+    const nameA = isBn ? (a.nameBn || a.name) : a.name;
+    const nameB = isBn ? (b.nameBn || b.name) : b.name;
+    return compareMemberBaseNames(nameA, nameB, isBn);
+  });
 }
 
 // Pleasant chime synthesizer using Web Audio API

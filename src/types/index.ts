@@ -54,6 +54,7 @@ export interface MonthlyPayment {
   month: number; // 1 = January, 12 = December
   amount: number;
   paymentDate: string;
+  paymentTime?: string;
   paymentMethod: PaymentMethod;
   transactionId?: string;
   notes?: string;
@@ -86,15 +87,36 @@ export interface Investment {
   createdBy?: string;
 }
 
+export type NotificationType =
+  | 'payment'
+  | 'investment'
+  | 'member'
+  | 'fund'
+  | 'system'
+  | 'broadcast'
+  | 'urgent_notice'
+  | 'meeting'
+  | 'due_reminder';
+
 export interface AppNotification {
   id: string;
   fundId?: string;
   adminId?: string;
+  targetAudience?: 'all' | 'admins' | 'members' | 'user' | 'due_members';
+  targetUserId?: string;
+  targetUserIds?: string[];
+  targetUserName?: string;
+  targetMemberNames?: string[];
+  senderName?: string;
+  senderRole?: string;
   title: string;
   titleBn?: string;
   message: string;
   messageBn?: string;
-  type: 'payment' | 'investment' | 'member' | 'fund' | 'system';
+  type: NotificationType;
+  priority?: 'normal' | 'high' | 'urgent';
+  sound?: boolean;
+  link?: string;
   timestamp: string;
   read: boolean;
   metadata?: {
@@ -103,6 +125,13 @@ export interface AppNotification {
     investmentId?: string;
     fundId?: string;
     amount?: number;
+    badge?: string;
+    automatedDueReminder?: boolean;
+    slotKey?: string;
+    year?: number;
+    month?: number;
+    day?: number;
+    slot?: string;
   };
 }
 
