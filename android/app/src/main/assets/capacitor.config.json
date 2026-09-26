@@ -1,0 +1,23 @@
+{
+	"appId": "com.probashimuktofund.app",
+	"appName": "প্রবাসী মুক্ত ফান্ড",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "https",
+		"cleartext": true
+	},
+	"plugins": {
+		"LocalNotifications": {
+			"smallIcon": "ic_stat_icon_config_sample",
+			"iconColor": "#059669",
+			"sound": "call_ringtone.mp3"
+		},
+		"PushNotifications": {
+			"presentationOptions": [
+				"badge",
+				"sound",
+				"alert"
+			]
+		}
+	}
+}

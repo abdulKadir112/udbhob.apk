@@ -9,7 +9,20 @@ export default defineConfig(() => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
+        react: path.resolve(__dirname, 'node_modules/react'),
+        'react-dom': path.resolve(__dirname, 'node_modules/react-dom'),
       },
+      dedupe: ['react', 'react-dom'],
+    },
+    optimizeDeps: {
+      include: [
+        'react',
+        'react-dom',
+        'react-dom/client',
+        'react/jsx-runtime',
+        'react/jsx-dev-runtime',
+        'lucide-react',
+      ],
     },
     build: {
       chunkSizeWarningLimit: 1200,
@@ -17,13 +30,23 @@ export default defineConfig(() => {
         output: {
           manualChunks(id) {
             if (id.includes('node_modules')) {
+              if (
+                id.includes('/react/') ||
+                id.includes('/react-dom/') ||
+                id.includes('/scheduler/')
+              ) {
+                return 'vendor-react';
+              }
               if (id.includes('firebase')) {
                 return 'vendor-firebase';
               }
               if (id.includes('lucide-react')) {
                 return 'vendor-lucide';
               }
-              if (id.includes('jspdf') || id.includes('html2canvas') || id.includes('xlsx')) {
+              if (id.includes('motion') || id.includes('framer-motion')) {
+                return 'vendor-motion';
+              }
+              if (id.includes('jspdf') || id.includes('html2canvas') || id.includes('html-to-image')) {
                 return 'vendor-export';
               }
             }

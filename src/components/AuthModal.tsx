@@ -30,8 +30,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, language 
   const {
     loginWithCredentials,
     registerAdminWithFund,
-    loginAsDemoAdmin,
-    loginAsDemoMember,
     logout,
     userRole,
     isAdmin,

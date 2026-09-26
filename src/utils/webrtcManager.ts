@@ -60,6 +60,8 @@ export class WebRTCManager {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+          sampleRate: 48000,
+          channelCount: 1,
         },
         video:
           type === 'video'
@@ -267,6 +269,29 @@ export class WebRTCManager {
         }
       };
 
+      // Auto-reconnect & state monitor
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+          console.log('[WebRTC Caller] Connection state changed to:', pc.connectionState);
+          try {
+            if (typeof (pc as any).restartIce === 'function') {
+              (pc as any).restartIce();
+            }
+          } catch {}
+        }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === 'disconnected') {
+          console.log('[WebRTC Caller] ICE disconnected, recovering...');
+          try {
+            if (typeof (pc as any).restartIce === 'function') {
+              (pc as any).restartIce();
+            }
+          } catch {}
+        }
+      };
+
       // Create Offer SDP
       const offerDescription = await pc.createOffer({
         offerToReceiveAudio: true,
@@ -400,6 +425,29 @@ export class WebRTCManager {
           addDoc(calleeCandidatesCol, event.candidate.toJSON()).catch((err) => {
             console.warn('Error saving callee candidate:', err);
           });
+        }
+      };
+
+      // Auto-reconnect & state monitor for callee
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+          console.log('[WebRTC Callee] Connection state changed to:', pc.connectionState);
+          try {
+            if (typeof (pc as any).restartIce === 'function') {
+              (pc as any).restartIce();
+            }
+          } catch {}
+        }
+      };
+
+      pc.oniceconnectionstatechange = () => {
+        if (pc.iceConnectionState === 'disconnected') {
+          console.log('[WebRTC Callee] ICE disconnected, recovering...');
+          try {
+            if (typeof (pc as any).restartIce === 'function') {
+              (pc as any).restartIce();
+            }
+          } catch {}
         }
       };
 

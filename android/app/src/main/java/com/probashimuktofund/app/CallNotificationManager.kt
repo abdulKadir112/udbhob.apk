@@ -1,0 +1,165 @@
+package com.probashimuktofund.app
+
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.graphics.Bitmap
+import android.media.AudioAttributes
+import android.media.Ringtone
+import android.media.RingtoneManager
+import android.net.Uri
+import android.os.Build
+import android.os.Vibrator
+import android.os.VibratorManager
+import androidx.core.app.NotificationCompat
+
+object CallNotificationManager {
+    const val CHANNEL_ID = "probashi_call_channel"
+    const val CHANNEL_NAME = "প্রবাসী মুক্ত ফান্ড কল নোটিফিকেশন"
+    const val CALL_NOTIFICATION_ID = 9999
+
+    const val ACTION_ACCEPT_CALL = "com.probashimuktofund.app.ACTION_ACCEPT_CALL"
+    const val ACTION_REJECT_CALL = "com.probashimuktofund.app.ACTION_REJECT_CALL"
+
+    private var activeRingtone: Ringtone? = null
+
+    fun createNotificationChannel(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val soundUri: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            val audioAttributes = AudioAttributes.Builder()
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                .build()
+
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "প্রবাসী মুক্ত ফান্ড এর ইনকামিং অডিও এবং ভিডিও কলের জন্য হাই-প্রায়োরিটি নোটিফিকেশন"
+                enableLights(true)
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500, 1500, 500, 2000)
+                setSound(soundUri, audioAttributes)
+                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+                setBypassDnd(true)
+            }
+
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(channel)
+        }
+    }
+
+    fun showIncomingCallNotification(
+        context: Context,
+        callId: String,
+        callerName: String,
+        callerRole: String,
+        callerCountry: String,
+        callType: String,
+        callerAvatar: String? = null
+    ) {
+        createNotificationChannel(context)
+        startRinging(context)
+
+        // Fullscreen Intent to open IncomingCallActivity on lockscreen
+        val fullScreenIntent = Intent(context, IncomingCallActivity::class.java).apply {
+            putExtra("CALL_ID", callId)
+            putExtra("CALLER_NAME", callerName)
+            putExtra("CALLER_ROLE", callerRole)
+            putExtra("CALLER_COUNTRY", callerCountry)
+            putExtra("CALL_TYPE", callType)
+            putExtra("CALLER_AVATAR", callerAvatar)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+        }
+        val fullScreenPendingIntent = PendingIntent.getActivity(
+            context,
+            0,
+            fullScreenIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Accept Action Intent
+        val acceptIntent = Intent(context, CallActionReceiver::class.java).apply {
+            action = ACTION_ACCEPT_CALL
+            putExtra("CALL_ID", callId)
+            putExtra("CALL_TYPE", callType)
+        }
+        val acceptPendingIntent = PendingIntent.getBroadcast(
+            context,
+            1,
+            acceptIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Reject Action Intent
+        val rejectIntent = Intent(context, CallActionReceiver::class.java).apply {
+            action = ACTION_REJECT_CALL
+            putExtra("CALL_ID", callId)
+        }
+        val rejectPendingIntent = PendingIntent.getBroadcast(
+            context,
+            2,
+            rejectIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val isVideo = callType.equals("video", ignoreCase = true)
+        val title = if (isVideo) "📹 ইনকামিং ভিডিও কল" else "📞 ইনকামিং অডিও কল"
+        val subtitle = "$callerName ($callerCountry)"
+
+        val notificationBuilder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            .setContentTitle(title)
+            .setContentText(subtitle)
+            .setSubText("প্রবাসী মুক্ত ফান্ড")
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setFullScreenIntent(fullScreenPendingIntent, true)
+            .setContentIntent(fullScreenPendingIntent)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "কেটে দিন", rejectPendingIntent)
+            .addAction(android.R.drawable.ic_menu_call, "রিসিভ করুন", acceptPendingIntent)
+
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(CALL_NOTIFICATION_ID, notificationBuilder.build())
+    }
+
+    fun startRinging(context: Context) {
+        try {
+            stopRinging()
+            val alertUri: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            activeRingtone = RingtoneManager.getRingtone(context.applicationContext, alertUri)?.apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    isLooping = true
+                }
+                play()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun stopRinging() {
+        try {
+            activeRingtone?.let {
+                if (it.isPlaying) {
+                    it.stop()
+                }
+            }
+            activeRingtone = null
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun dismissCall(context: Context) {
+        stopRinging()
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.cancel(CALL_NOTIFICATION_ID)
+    }
+}

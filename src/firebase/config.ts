@@ -50,5 +50,10 @@ try {
 
 export const db = firestoreDb;
 
+// FCM Web Push Public VAPID Key provided by user
+export const VAPID_KEY = 'BDESMpX3f7lHEkqjlQPyM1QtmXv1tFTX8A1sSTR9SJSrV862I44bte6FE0QXzc2cIStkVGeys90YGPgHRyE1pnM';
+
+export { firebaseConfig };
 export default app;
+
 

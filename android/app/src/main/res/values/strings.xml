@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">প্রবাসী মুক্ত ফান্ড</string>
+    <string name="title_activity_main">প্রবাসী মুক্ত ফান্ড</string>
+    <string name="package_name">com.probashimuktofund.app</string>
+    <string name="custom_url_scheme">com.probashimuktofund.app</string>
+</resources>

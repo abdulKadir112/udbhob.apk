@@ -14,12 +14,16 @@ import {
   Mic,
   Camera,
   MapPin,
+  PhoneCall,
+  Volume2,
 } from 'lucide-react';
 import { useFund } from '../context/FundContext';
 import {
   requestAllCorePermissions,
   sendTestPushNotification,
   sendTestIncomingCallAlert,
+  scheduleLockScreenCallTest,
+  scheduleLockScreenNotificationTest,
 } from '../utils/pushNotification';
 
 interface PwaInstallModalProps {
@@ -43,6 +47,8 @@ export const PwaInstallModal: React.FC<PwaInstallModalProps> = ({
     typeof window !== 'undefined' && 'Notification' in window ? Notification.permission : 'default'
   );
   const [notifTesting, setNotifTesting] = useState(false);
+  const [callTesting, setCallTesting] = useState(false);
+  const [countdown, setCountdown] = useState<number | null>(null);
 
   useEffect(() => {
     const handleBeforeInstallPrompt = (e: Event) => {
@@ -81,14 +87,16 @@ export const PwaInstallModal: React.FC<PwaInstallModalProps> = ({
       if (outcome === 'accepted') {
         setIsInstalled(true);
         setDeferredPrompt(null);
+        if (typeof window !== 'undefined') {
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('probashi_open_permissions_modal'));
+          }, 600);
+        }
       }
     } else {
       // Prompt guidance according to active tab
     }
   };
-
-  const [callTesting, setCallTesting] = useState(false);
-  const [countdown, setCountdown] = useState<number | null>(null);
 
   const handleRequestPushNotification = async () => {
     try {
@@ -97,6 +105,7 @@ export const PwaInstallModal: React.FC<PwaInstallModalProps> = ({
       setNotifPermission(res.notification);
       if (res.notification === 'granted') {
         await sendTestPushNotification(isBn);
+        await scheduleLockScreenNotificationTest(3000, isBn);
       }
     } catch (e) {
       console.error('Unified permission error in PWA modal:', e);
@@ -111,7 +120,10 @@ export const PwaInstallModal: React.FC<PwaInstallModalProps> = ({
       const res = await requestAllCorePermissions();
       setNotifPermission(res.notification);
       if (res.notification === 'granted') {
-        // Give 4 seconds countdown so user can lock their phone screen
+        // Arm the background Service Worker scheduler FIRST so it runs in background even if the screen turns off immediately
+        await scheduleLockScreenCallTest(4000, isBn);
+
+        // Visual UI countdown
         setCountdown(4);
         let count = 4;
         const timer = setInterval(() => {
@@ -119,7 +131,6 @@ export const PwaInstallModal: React.FC<PwaInstallModalProps> = ({
           if (count <= 0) {
             clearInterval(timer);
             setCountdown(null);
-            sendTestIncomingCallAlert(isBn);
             setCallTesting(false);
           } else {
             setCountdown(count);
@@ -258,11 +269,55 @@ export const PwaInstallModal: React.FC<PwaInstallModalProps> = ({
                 </li>
                 <li className="flex items-start gap-2">
                   <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-800 font-bold text-2xs flex items-center justify-center shrink-0 mt-0.5">৩</span>
-                  <span>{isBn ? '"Install" বা "Add" চাপলে অ্যাপটি হোমস্ক্রিনে চলে আসবে।' : 'Tap "Install" to complete.'}</span>
+                  <span>{isBn ? '"Install" বা "Add" চাপলে অ্যাপটি ফোনের হোমস্ক্রিনে চলে আসবে।' : 'Tap "Install" to complete.'}</span>
                 </li>
               </ol>
             </div>
           )}
+
+          {/* 🛡️ Phone Safety & 24/7 Background Call Guarantee Card */}
+          <div className="p-4 rounded-2xl bg-emerald-950/5 border border-emerald-500/30 space-y-3 text-xs">
+            <div className="flex items-center gap-2 text-emerald-900 font-extrabold">
+              <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{isBn ? '🛡️ ফোনের সুরক্ষা ও নিরবচ্ছিন্ন ব্যাকগ্রাউন্ড কল গ্যারান্টি' : '🛡️ Phone Safety & 24/7 Background Reliability'}</span>
+            </div>
+
+            <div className="space-y-2 text-slate-700 text-2xs leading-relaxed">
+              <div className="flex items-start gap-2 bg-white/80 p-2.5 rounded-xl border border-emerald-100">
+                <span className="text-emerald-700 font-bold shrink-0">⚡</span>
+                <p>
+                  <strong>{isBn ? 'ফোনের ক্ষতি বা ব্যাটারি ড্রেন হবে না:' : 'Zero Phone Harm & Battery Safe:'}</strong>{' '}
+                  {isBn
+                    ? 'অ্যাপটি ব্যাকগ্রাউন্ডে অনর্থক ভারী প্রসেস বা ব্যাটারি খরচ করে না। ফোন স্লিপে থাকলে শক্তি খরচ শূন্য (0%)। শুধুমাত্র কোনো সদস্য কল বা কিস্তির নোটিফিকেশন পাঠালেই লাইটওয়েট ফায়ারবেস ক্লাউড মেসেজিং ফোনের সার্ভিস ওয়ার্কারকে সক্রিয় করে রিং বাজায়।'
+                    : 'The app consumes zero battery when idle. When someone calls, lightweight Firebase Push awakens the service worker instantly.'}
+                </p>
+              </div>
+
+              <div className="flex items-start gap-2 bg-white/80 p-2.5 rounded-xl border border-emerald-100">
+                <span className="text-emerald-700 font-bold shrink-0">🔒</span>
+                <p>
+                  <strong>{isBn ? 'কল শেষেই সেন্সর বন্ধ:' : 'Hardware Protection:'}</strong>{' '}
+                  {isBn
+                    ? 'কল কেটে দেওয়ামাত্রই ক্যামেরা ও মাইক্রোফোন পুরোপুরি স্টপ এবং বন্ধ হয়ে যায়। ফোনে অতিরিক্ত তাপ বা চার্জ শেষ হওয়ার কোনো সুযোগ নেই।'
+                    : 'Camera and microphone hardware sensors are immediately terminated upon call end.'}
+                </p>
+              </div>
+
+              <div className="flex items-start gap-2 bg-amber-50/80 p-2.5 rounded-xl border border-amber-200 text-amber-950">
+                <span className="text-amber-700 font-bold shrink-0">📱</span>
+                <div>
+                  <p className="font-bold">
+                    {isBn ? 'অ্যান্ড্রয়েড ফোনে লক-স্ক্রিন কল নিশ্চিত করার সেটিং:' : 'Android Setting for Lock-Screen Calls:'}
+                  </p>
+                  <p className="mt-0.5 text-slate-600">
+                    {isBn
+                      ? 'Xiaomi, Samsung, Vivo, Oppo ইত্যাদি ফোনে Settings > Apps > Udbhob এ গিয়ে Battery Saver কে "No restrictions" (সীমাহীন) এবং "Autostart" অন রাখুন যাতে ফোন লক থাকলেও কল ও নোটিফিকেশন মিস না হয়।'
+                      : 'Set Battery to "Unrestricted" / "No restrictions" and enable "Autostart" so Android does not sleep the incoming call listener.'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
 
           {/* Guide for iOS */}
           {activeTab === 'ios' && (

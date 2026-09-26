@@ -6,8 +6,24 @@ class SoundEffects {
   private ctx: AudioContext | null = null;
   private isUnlocked: boolean = false;
 
+  constructor() {
+    if (typeof window !== 'undefined') {
+      const unlock = () => {
+        this.unlockAudio();
+        window.removeEventListener('click', unlock);
+        window.removeEventListener('touchstart', unlock);
+        window.removeEventListener('pointerdown', unlock);
+        window.removeEventListener('keydown', unlock);
+      };
+      window.addEventListener('click', unlock, { passive: true });
+      window.addEventListener('touchstart', unlock, { passive: true });
+      window.addEventListener('pointerdown', unlock, { passive: true });
+      window.addEventListener('keydown', unlock, { passive: true });
+    }
+  }
+
   unlockAudio() {
-    if (this.isUnlocked) return;
+    if (this.isUnlocked && this.ctx && this.ctx.state === 'running') return;
     try {
       const ctx = this.getContext();
       if (ctx && ctx.state === 'suspended') {
@@ -223,18 +239,21 @@ class SoundEffects {
       try {
         const ctx = this.getContext();
         if (ctx) {
+          if (ctx.state === 'suspended') {
+            ctx.resume().catch(() => {});
+          }
           const now = ctx.currentTime;
 
-          // Realistic phone marimba melody pattern:
+          // Realistic phone marimba melody pattern with rich pleasant tone:
           const melody = [
-            { freq: 1318.51, time: 0.00, dur: 0.16, gain: 0.22 }, // E6
-            { freq: 987.77,  time: 0.12, dur: 0.16, gain: 0.24 }, // B5
-            { freq: 830.61,  time: 0.24, dur: 0.16, gain: 0.22 }, // G#5
-            { freq: 659.25,  time: 0.36, dur: 0.18, gain: 0.20 }, // E5
-            { freq: 987.77,  time: 0.48, dur: 0.16, gain: 0.24 }, // B5
-            { freq: 1318.51, time: 0.60, dur: 0.18, gain: 0.26 }, // E6
-            { freq: 1661.22, time: 0.74, dur: 0.28, gain: 0.28 }, // G#6
-            { freq: 1318.51, time: 0.96, dur: 0.38, gain: 0.25 }, // E6 (resolving ring)
+            { freq: 1318.51, time: 0.00, dur: 0.16, gain: 0.40 }, // E6
+            { freq: 987.77,  time: 0.12, dur: 0.16, gain: 0.42 }, // B5
+            { freq: 830.61,  time: 0.24, dur: 0.16, gain: 0.40 }, // G#5
+            { freq: 659.25,  time: 0.36, dur: 0.18, gain: 0.38 }, // E5
+            { freq: 987.77,  time: 0.48, dur: 0.16, gain: 0.42 }, // B5
+            { freq: 1318.51, time: 0.60, dur: 0.18, gain: 0.45 }, // E6
+            { freq: 1661.22, time: 0.74, dur: 0.28, gain: 0.48 }, // G#6
+            { freq: 1318.51, time: 0.96, dur: 0.38, gain: 0.42 }, // E6 (resolving ring)
           ];
 
           melody.forEach(({ freq, time: noteOffset, dur, gain: noteGain }) => {
@@ -269,7 +288,7 @@ class SoundEffects {
       }
 
       if (active) {
-        timeoutId = setTimeout(playRingtonePhrase, 2800);
+        timeoutId = setTimeout(playRingtonePhrase, 2600);
       }
     };
 

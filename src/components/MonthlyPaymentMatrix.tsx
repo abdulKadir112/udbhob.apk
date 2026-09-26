@@ -34,6 +34,7 @@ import {
   getCleanBaseName,
   sortMembersByBaseName,
   sortMembersByCountryAndName,
+  getMemberMonthlyRate,
 } from '../utils/formatters';
 import { printYearlyFundMatrix } from '../utils/printHelpers';
 
@@ -182,7 +183,7 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
       members.forEach((member) => {
         const monthPays = paymentsMap.get(member.id)?.get(m) || [];
         const sum = monthPays.reduce((acc, p) => acc + (p.amount || 0), 0);
-        if (sum >= (member.monthlyShareAmount || 1000)) {
+        if (sum >= getMemberMonthlyRate(member)) {
           paidCount++;
         }
       });
@@ -256,14 +257,14 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
         return monthTotal > 0 ? monthTotal : 0;
       });
 
-      const yearlyTarget = member.monthlyShareAmount * 12;
+      const yearlyTarget = getMemberMonthlyRate(member) * 12;
       const status = memberYearTotal >= yearlyTarget ? 'Completed' : `${Math.round((memberYearTotal / yearlyTarget) * 100)}% Paid`;
 
       return [
         `"${member.name}"`,
         `"${member.country}"`,
         member.shares,
-        member.monthlyShareAmount,
+        getMemberMonthlyRate(member),
         ...monthCols,
         memberYearTotal,
         `"${status}"`,
@@ -717,7 +718,7 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
                     {group.members.map((member) => {
                       const monthMap = paymentsMap.get(member.id);
                       let memberTotalYearPaid = 0;
-                      const yearlyTarget = (member.monthlyShareAmount || 1000) * 12;
+                      const yearlyTarget = getMemberMonthlyRate(member) * 12;
                       const cleanBase = getCleanBaseName(isBn ? member.nameBn || member.name : member.name);
 
                       return (
@@ -753,11 +754,15 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
                                     {getCountryFlag(member.country)}
                                   </span>
                                 </div>
-                                <div className="flex items-center space-x-1 sm:space-x-2 text-[9px] sm:text-2xs text-slate-500">
+                                <div className="flex items-center space-x-1 sm:space-x-1.5 text-[9px] sm:text-2xs text-slate-500 flex-wrap">
                                   <span className="truncate">{isBn ? getCountryBn(member.country) : member.country}</span>
                                   <span>•</span>
-                                  <span className="font-semibold text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded-none whitespace-nowrap">
-                                    {formatBDT(member.monthlyShareAmount || (member.shares ? member.shares * 1000 : 1000), isBn)}/{isBn ? 'মাস' : 'mo'}
+                                  <span className="font-bold text-amber-800 bg-amber-50 px-1 py-0.2 border border-amber-200/60 rounded-xs whitespace-nowrap">
+                                    {isBn ? toBengaliNumerals(member.shares || 1) : (member.shares || 1)} {isBn ? 'শেয়ার' : 'sh'}
+                                  </span>
+                                  <span>•</span>
+                                  <span className="font-semibold text-emerald-700 bg-emerald-50 px-1 py-0.2 rounded-xs whitespace-nowrap">
+                                    {formatBDT(getMemberMonthlyRate(member), isBn)}/{isBn ? 'মাস' : 'mo'}
                                   </span>
                                 </div>
                               </div>
@@ -770,7 +775,7 @@ export const MonthlyPaymentMatrix: React.FC<MonthlyPaymentMatrixProps> = ({
                             const monthPaid = monthPayments.reduce((s, p) => s + (p.amount || 0), 0);
                             memberTotalYearPaid += monthPaid;
 
-                            const requiredDue = member.monthlyShareAmount || (member.shares ? member.shares * 1000 : 1000);
+                            const requiredDue = getMemberMonthlyRate(member);
                             const isFullPaid = monthPaid >= requiredDue;
                             const isPartial = monthPaid > 0 && monthPaid < requiredDue;
 

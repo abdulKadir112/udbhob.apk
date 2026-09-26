@@ -25,7 +25,11 @@ import { IncomingCallModal } from './components/chat/IncomingCallModal';
 import { PermissionPromptModal } from './components/PermissionPromptModal';
 import { Member, Investment } from './types';
 import { formatBDT, toBengaliNumerals } from './utils/formatters';
-import { requestNotificationPermission } from './utils/pushNotification';
+import {
+  requestNotificationPermission,
+  getOrRegisterFcmToken,
+  initForegroundFcmListener,
+} from './utils/pushNotification';
 import {
   Wallet,
   Shield,
@@ -65,9 +69,10 @@ function MainApp() {
   const [adminDefaultTab, setAdminDefaultTab] = useState<'payment' | 'investment' | 'transactions' | 'members'>('payment');
   const [showInitialPermissionModal, setShowInitialPermissionModal] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
-      const alreadyHandled = localStorage.getItem('probashi_permissions_prompted');
-      if (alreadyHandled === 'true') return false;
-      if ('Notification' in window && Notification.permission === 'granted') return false;
+      const isCompleted = localStorage.getItem('probashi_core_permissions_setup_done');
+      if (isCompleted === 'true' && 'Notification' in window && Notification.permission === 'granted') {
+        return false;
+      }
       return true;
     }
     return false;
@@ -75,15 +80,43 @@ function MainApp() {
 
   const isBn = language === 'bn';
 
-  // Request all permissions automatically on first load / member login if not yet granted
+  // Listen for PWA installation & first install event so all permissions are setup immediately
+  useEffect(() => {
+    const handleAppInstalled = () => {
+      // User just installed the app to home screen! Trigger permission setup
+      setShowInitialPermissionModal(true);
+    };
+
+    const handleCustomOpenPerms = () => {
+      setShowInitialPermissionModal(true);
+    };
+
+    window.addEventListener('appinstalled', handleAppInstalled);
+    window.addEventListener('probashi_open_permissions_modal', handleCustomOpenPerms);
+
+    return () => {
+      window.removeEventListener('appinstalled', handleAppInstalled);
+      window.removeEventListener('probashi_open_permissions_modal', handleCustomOpenPerms);
+    };
+  }, []);
+
+  // Ensure permission setup is presented if not fully completed
   useEffect(() => {
     if (typeof window !== 'undefined') {
-      const alreadyHandled = localStorage.getItem('probashi_permissions_prompted');
-      if (alreadyHandled !== 'true' && 'Notification' in window && Notification.permission !== 'granted') {
+      const isCompleted = localStorage.getItem('probashi_core_permissions_setup_done');
+      if (isCompleted !== 'true' || ('Notification' in window && Notification.permission !== 'granted')) {
         setShowInitialPermissionModal(true);
       }
     }
   }, [userSession?.userId]);
+
+  // Sync FCM token with Firestore and listen to foreground push events
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+      getOrRegisterFcmToken(userSession?.memberId, userSession?.fundId).catch(() => {});
+      initForegroundFcmListener();
+    }
+  }, [userSession?.memberId, userSession?.fundId]);
 
   // Handler to open admin payment form
   const handleOpenAddPayment = () => {
@@ -174,6 +207,7 @@ function MainApp() {
           language={language}
           setLanguage={setLanguage}
           onOpenNotifications={() => setIsNotificationsOpen(true)}
+          onSelectMember={(member) => setSelectedMemberForModal(member)}
         />
       )}
 
@@ -190,6 +224,7 @@ function MainApp() {
             onOpenFundModal={() => setIsFundProfileModalOpen(true)}
             language={language}
             setLanguage={setLanguage}
+            onSelectMember={(member) => setSelectedMemberForModal(member)}
           />
         </div>
       )}
@@ -425,6 +460,7 @@ function MainApp() {
         isOpen={isProfileModalOpen}
         onClose={() => setIsProfileModalOpen(false)}
         onOpenAuthModal={() => setIsAuthModalOpen(true)}
+        onOpenMemberDetailModal={(m) => setSelectedMemberForModal(m)}
         language={language}
       />
 

@@ -59,6 +59,7 @@ import {
   playChime,
   sortMembersByCountryAndName,
   sortMembersByBaseName,
+  getMemberMonthlyRate,
 } from '../utils/formatters';
 
 interface AdminPanelProps {
@@ -97,10 +98,37 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     sendCustomPushNotification,
     triggerManualDueReminders,
     monthlyPaymentStatus,
+    purgeAllDummyData,
   } = useFund();
 
   const { isAdmin, userSession } = useAuth();
   const isBn = language === 'bn';
+
+  const [isPurgingDummy, setIsPurgingDummy] = useState<boolean>(false);
+  const [purgeResult, setPurgeResult] = useState<string | null>(null);
+  const [showPurgeConfirm, setShowPurgeConfirm] = useState<boolean>(false);
+
+  const handlePurgeDummyData = async () => {
+    try {
+      setIsPurgingDummy(true);
+      setPurgeResult(null);
+      const res = await purgeAllDummyData();
+      setPurgeResult(
+        isBn
+          ? `সফলভাবে সব ডামি ডাটা মুছে ফেলা হয়েছে! মুছে ফেলা হয়েছে: ${res.membersCount} জন ডামি সদস্য, ${res.paymentsCount} টি ডামি পেমেন্ট, ${res.investmentsCount} টি বিনিয়োগ, ${res.notificationsCount} টি নোটিফিকেশন।`
+          : `Successfully purged all dummy data! Deleted: ${res.membersCount} members, ${res.paymentsCount} payments, ${res.investmentsCount} investments, ${res.notificationsCount} notifications.`
+      );
+      setShowPurgeConfirm(false);
+    } catch (err: any) {
+      setPurgeResult(
+        isBn
+          ? `ডামি ডাটা মোছার সময় ত্রুটি: ${err.message || 'অজানা সমস্যা'}`
+          : `Error purging dummy data: ${err.message || 'Unknown error'}`
+      );
+    } finally {
+      setIsPurgingDummy(false);
+    }
+  };
 
   const [currentAdminTab, setCurrentAdminTab] = useState<'payment' | 'investment' | 'transactions' | 'members' | 'funds' | 'transfer' | 'push'>(
     defaultTab === 'funds' ? 'funds' : defaultTab
@@ -346,7 +374,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     const paidList = selectedMemberPayments.filter((p) => Number(p.year) === Number(paymentYear));
     const paidCount = paidList.length;
     const paidTotal = paidList.reduce((acc, p) => acc + (Number(p.amount) || 0), 0);
-    const expectedMonthly = selectedPaymentMember?.monthlyShareAmount || ((selectedPaymentMember?.shares || 1) * 1000);
+    const expectedMonthly = getMemberMonthlyRate(selectedPaymentMember);
     const dueCount = Math.max(0, 12 - paidCount);
     const dueTotal = dueCount * expectedMonthly;
     const lifetimeTotal = selectedMemberPayments.reduce((acc, p) => acc + (Number(p.amount) || 0), 0);
@@ -444,11 +472,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setSelectedMemberId(memberId);
     const m = members.find((x) => x.id === memberId);
     if (m) {
-      const sharesCount = m.shares || 1;
-      const expectedDue = m.monthlyShareAmount && m.monthlyShareAmount >= sharesCount * 1000
-        ? m.monthlyShareAmount
-        : (sharesCount * 1000);
-      setPaymentAmount(String(expectedDue));
+      const rate = getMemberMonthlyRate(m);
+      if (isBatchMonth) {
+        const count = selectedBatchMonths.length > 0 ? selectedBatchMonths.length : 1;
+        setPaymentAmount(String(rate * count));
+      } else {
+        setPaymentAmount(String(rate));
+      }
     }
   };
 
@@ -488,17 +518,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     const member = members.find((m) => m.id === selectedMemberId);
     if (!member) return;
 
+    const memberMonthlyRate = getMemberMonthlyRate(member);
+
+    if (isBatchMonth && selectedBatchMonths.length === 0) {
+      alert(isBn ? 'অনুগ্রহ করে কমপক্ষে একটি মাস নির্বাচন করুন।' : 'Please select at least one month.');
+      return;
+    }
+
     setPaymentSubmitting(true);
     try {
-      if (isBatchMonth && selectedBatchMonths.length > 1) {
+      if (isBatchMonth && selectedBatchMonths.length > 0) {
         // Multi-month batch submit
-        const amountPerMonth = Number(paymentAmount) / selectedBatchMonths.length;
+        // Each month receives EXACTLY the member's monthly rate (1000 per share, 2 shares = 2000, 3 shares = 3000)
+        // Admin fixed rate is strictly enforced
         const paymentsList = selectedBatchMonths.map((m) => ({
           memberId: member.id,
           memberName: member.nameBn || member.name,
           year: paymentYear,
           month: m,
-          amount: amountPerMonth,
+          amount: memberMonthlyRate,
           paymentDate: paymentDate || new Date().toISOString().split('T')[0],
           paymentTime: paymentTime || undefined,
           paymentMethod,
@@ -507,13 +545,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         }));
         await batchAddPayments(paymentsList);
       } else {
-        // Single month submit
+        // Single month submit: cannot exceed member's fixed monthly savings
+        const enteredAmount = Number(paymentAmount) || memberMonthlyRate;
+        if (enteredAmount > memberMonthlyRate) {
+          alert(
+            isBn
+              ? `⚠️ অতিরিক্ত টাকা জমা গ্রহণযোগ্য নয়!\n\n${member.nameBn || member.name}-এর জন্য এডমিন কর্তৃক নির্ধারিত মাসিক সঞ্চয় ৳${formatBDT(memberMonthlyRate, isBn)} (${toBengaliNumerals(member.shares || 1)}টি শেয়ার)।\n\nনির্ধারিত ৳${formatBDT(memberMonthlyRate, isBn)}-এর বেশি টাকা এক মাসে জমা দেওয়া যাবে না। আপনি যদি একাধিক মাসের কিস্তি দিতে চান, তবে নিচে "একাধিক মাসের কিস্তি একসাথে জমা দিন (Batch Entry)" অপশনটি চালু করুন।`
+              : `Payment cannot exceed member's fixed monthly savings rate: ৳${memberMonthlyRate}. Please use Batch Entry for multiple months.`
+          );
+          setPaymentAmount(String(memberMonthlyRate));
+          setPaymentSubmitting(false);
+          return;
+        }
+
         await addPayment({
           memberId: member.id,
           memberName: member.nameBn || member.name,
           year: paymentYear,
           month: Number(paymentMonth),
-          amount: Number(paymentAmount),
+          amount: enteredAmount,
           paymentDate: paymentDate || new Date().toISOString().split('T')[0],
           paymentTime: paymentTime || undefined,
           paymentMethod,
@@ -523,7 +573,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       }
 
       triggerConfetti();
-      setPaymentSuccessMsg(isBn ? 'সঞ্চয় সফলভাবে জমা হয়েছে এবং ক্লাউডে আপডেট হয়েছে!' : 'Payment recorded and synced to cloud!');
+      const totalAmountPaid = isBatchMonth ? selectedBatchMonths.length * memberMonthlyRate : (Number(paymentAmount) || memberMonthlyRate);
+      setPaymentSuccessMsg(
+        isBn
+          ? `সঞ্চয় সফলভাবে জমা হয়েছে! মোট ৳${formatBDT(totalAmountPaid, isBn)} ক্লাউডে সংরক্ষিত হয়েছে।`
+          : 'Payment recorded and synced to cloud!'
+      );
       setTimeout(() => setPaymentSuccessMsg(''), 4000);
 
       // Reset form fields
@@ -603,7 +658,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           email: newMemberEmail.trim() || undefined,
           country: newMemberCountry || 'Saudi Arabia',
           city: newMemberCity.trim() || undefined,
-          monthlyShareAmount: Number(newMemberShareAmount) || currentFund.defaultMonthlyAmount || 1000,
+          monthlyShareAmount: Math.max(Number(newMemberShareAmount) || 0, (Number(newMemberShares) || 1) * 1000),
           shares: Number(newMemberShares) || 1,
           notes: newMemberNotes.trim() || undefined,
         });
@@ -623,7 +678,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           email: newMemberEmail.trim() || undefined,
           country: newMemberCountry || 'Saudi Arabia',
           city: newMemberCity.trim() || undefined,
-          monthlyShareAmount: Number(newMemberShareAmount) || currentFund.defaultMonthlyAmount || 1000,
+          monthlyShareAmount: Math.max(Number(newMemberShareAmount) || 0, (Number(newMemberShares) || 1) * 1000),
           shares: Number(newMemberShares) || 1,
           joinedDate: new Date().toISOString().split('T')[0],
           role: 'member',
@@ -1076,9 +1131,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             </div>
                           ) : (
                             filteredPaymentMembers.map((m) => {
-                              const expectedDue = m.monthlyShareAmount && m.monthlyShareAmount >= (m.shares || 1) * 1000
-                                ? m.monthlyShareAmount
-                                : ((m.shares || 1) * 1000);
+                              const expectedDue = getMemberMonthlyRate(m);
                               return (
                                 <button
                                   key={m.id}
@@ -1133,7 +1186,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             </option>
                             {filteredPaymentMembers.map((m) => (
                               <option key={m.id} value={m.id}>
-                                {getCountryFlag(m.country)} {m.nameBn || m.name} ({m.country}) — {formatBDT(m.monthlyShareAmount || ((m.shares || 1) * 1000), isBn)}/{isBn ? 'মাস' : 'mo'} (@{m.username || 'user'})
+                                {getCountryFlag(m.country)} {m.nameBn || m.name} ({m.country}) — {formatBDT(getMemberMonthlyRate(m), isBn)}/{isBn ? 'মাস' : 'mo'} ({toBengaliNumerals(m.shares || 1)} {isBn ? 'শেয়ার' : 'shares'}) (@{m.username || 'user'})
                               </option>
                             ))}
                           </select>
@@ -1166,11 +1219,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                   <span className="font-mono">📞 {selectedPaymentMember.phone}</span>
                                   <span>•</span>
                                   <span className="font-bold text-emerald-900 bg-white px-2 py-0.5 rounded-lg border border-emerald-200">
-                                    {isBn ? `শেয়ার: ${toBengaliNumerals(selectedPaymentMember.shares || 1)} টি` : `Shares: ${selectedPaymentMember.shares || 1}`}
+                                    {isBn ? `শেয়ার: ${toBengaliNumerals(selectedPaymentMember.shares || 1)} টি (প্রতি শেয়ার ৳১,০০০)` : `Shares: ${selectedPaymentMember.shares || 1} (৳1,000/share)`}
                                   </span>
                                   <span>•</span>
                                   <span className="font-black text-emerald-800 bg-white px-2 py-0.5 rounded-lg border border-emerald-200">
-                                    {isBn ? 'নির্ধারিত মাসিক কিস্তি:' : 'Monthly Rate:'} {formatBDT(selectedPaymentMember.monthlyShareAmount || ((selectedPaymentMember.shares || 1) * 1000), isBn)}
+                                    {isBn ? 'নির্ধারিত মাসিক সঞ্চয়:' : 'Fixed Monthly Due:'} {formatBDT(getMemberMonthlyRate(selectedPaymentMember), isBn)}
                                   </span>
                                 </div>
                               </div>
@@ -1361,13 +1414,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
                   {/* Payment Amount */}
                   <div>
-                    <div className="flex items-center justify-between mb-1.5">
+                    <div className="flex items-center justify-between mb-1.5 flex-wrap gap-1">
                       <label className="block text-xs font-bold text-slate-700">
-                        {isBn ? 'জমার পরিমাণ (টাকা) *' : 'Amount (BDT) *'}
+                        {isBatchMonth
+                          ? (isBn ? `ব্যাচ জমার মোট পরিমাণ (${toBengaliNumerals(selectedBatchMonths.length)} মাসের মোট) *` : `Batch Total Amount (${selectedBatchMonths.length} months) *`)
+                          : (isBn ? 'জমার পরিমাণ (টাকা) *' : 'Amount (BDT) *')}
                       </label>
                       {selectedPaymentMember && (
-                        <span className="text-3xs font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-md">
-                          {isBn ? `প্রতি শেয়ার ৳১,০০০ হিসেবে মোট ৳${toBengaliNumerals(selectedPaymentMember.monthlyShareAmount || ((selectedPaymentMember.shares || 1) * 1000))}` : `Rate: ৳${selectedPaymentMember.monthlyShareAmount || ((selectedPaymentMember.shares || 1) * 1000)}`}
+                        <span className="text-3xs font-extrabold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded-md border border-emerald-300">
+                          {isBn
+                            ? `প্রতি শেয়ার ৳১,০০০ হিসেবে মোট ৳${toBengaliNumerals(getMemberMonthlyRate(selectedPaymentMember))}/মাস (${toBengaliNumerals(selectedPaymentMember.shares || 1)}টি শেয়ার)`
+                            : `Fixed: ৳${getMemberMonthlyRate(selectedPaymentMember)}/mo (${selectedPaymentMember.shares || 1} shares @ ৳1,000/share)`}
                         </span>
                       )}
                     </div>
@@ -1377,29 +1434,94 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         id="input-payment-amount"
                         type="number"
                         min="100"
+                        max={selectedPaymentMember ? (isBatchMonth ? Math.max(1, selectedBatchMonths.length) * getMemberMonthlyRate(selectedPaymentMember) : getMemberMonthlyRate(selectedPaymentMember)) : undefined}
                         step="100"
                         value={paymentAmount}
-                        onChange={(e) => setPaymentAmount(e.target.value)}
+                        readOnly={isBatchMonth}
+                        onChange={(e) => {
+                          if (!isBatchMonth) {
+                            const val = Number(e.target.value);
+                            const maxLimit = selectedPaymentMember ? getMemberMonthlyRate(selectedPaymentMember) : 100000;
+                            if (val > maxLimit) {
+                              setPaymentAmount(String(maxLimit));
+                            } else {
+                              setPaymentAmount(e.target.value);
+                            }
+                          }
+                        }}
                         required
                         placeholder="1000"
-                        className="w-full pl-8 pr-3 py-2.5 text-sm bg-white border border-slate-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 font-bold text-slate-900"
+                        className={`w-full pl-8 pr-3 py-2.5 text-sm border rounded-xl font-bold transition-all ${
+                          isBatchMonth
+                            ? 'bg-emerald-50/70 border-emerald-300 text-emerald-950 font-black cursor-not-allowed shadow-inner'
+                            : 'bg-white border-slate-300 text-slate-900 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500'
+                        }`}
                       />
                     </div>
+
+                    {/* Notice showing fixed limit */}
+                    {selectedPaymentMember && (
+                      <div className="mt-1 flex items-center justify-between text-2xs text-slate-500">
+                        <span>
+                          {isBatchMonth
+                            ? (isBn
+                                ? `🔒 এডমিন নির্ধারিত হার: ${toBengaliNumerals(selectedBatchMonths.length)} মাস × ৳${toBengaliNumerals(getMemberMonthlyRate(selectedPaymentMember))} = ৳${toBengaliNumerals(selectedBatchMonths.length * getMemberMonthlyRate(selectedPaymentMember))}`
+                                : `🔒 Rate: ${selectedBatchMonths.length} mos × ৳${getMemberMonthlyRate(selectedPaymentMember)} = ৳${selectedBatchMonths.length * getMemberMonthlyRate(selectedPaymentMember)}`)
+                            : (isBn
+                                ? `🔒 এডমিন নির্ধারিত সঞ্চয়: ৳${toBengaliNumerals(getMemberMonthlyRate(selectedPaymentMember))} (${toBengaliNumerals(selectedPaymentMember.shares || 1)}টি শেয়ার, এর বেশি গ্রহণযোগ্য নয়)`
+                                : `🔒 Fixed monthly rate: ৳${getMemberMonthlyRate(selectedPaymentMember)} (Max limit)`)}
+                        </span>
+                        {!isBatchMonth && Number(paymentAmount) !== getMemberMonthlyRate(selectedPaymentMember) && (
+                          <button
+                            type="button"
+                            onClick={() => setPaymentAmount(String(getMemberMonthlyRate(selectedPaymentMember)))}
+                            className="text-emerald-700 hover:text-emerald-900 font-bold underline cursor-pointer ml-2"
+                          >
+                            {isBn ? 'নির্ধারিত মান সেট করুন' : 'Reset'}
+                          </button>
+                        )}
+                      </div>
+                    )}
 
                     {/* Quick Multiplier Badges for Selected Member */}
                     {selectedPaymentMember && (
                       <div className="flex items-center gap-1.5 mt-2 overflow-x-auto pb-1 text-3xs scrollbar-none">
                         {[1, 2, 3, 6, 12].map((multiplier) => {
-                          const baseRate = selectedPaymentMember.monthlyShareAmount || ((selectedPaymentMember.shares || 1) * 1000);
+                          const baseRate = getMemberMonthlyRate(selectedPaymentMember);
                           const totalVal = baseRate * multiplier;
+                          const isActive = isBatchMonth && selectedBatchMonths.length === multiplier;
                           return (
                             <button
                               key={multiplier}
                               type="button"
-                              onClick={() => setPaymentAmount(String(totalVal))}
-                              className="px-2 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-900 font-bold shrink-0 transition-colors cursor-pointer"
+                              onClick={() => {
+                                const rate = getMemberMonthlyRate(selectedPaymentMember);
+                                if (multiplier === 1) {
+                                  setIsBatchMonth(false);
+                                  setSelectedBatchMonths([Number(paymentMonth) || 1]);
+                                  setPaymentAmount(String(rate));
+                                } else {
+                                  setIsBatchMonth(true);
+                                  // Pick the first 'multiplier' unpaid months of this year, or months 1..multiplier
+                                  const unpaid = MONTHS.filter((m) => !paidMonthsMapForYear.has(m.id)).map((m) => m.id);
+                                  let chosenMonths = unpaid.slice(0, multiplier);
+                                  if (chosenMonths.length < multiplier) {
+                                    const all = MONTHS.map((m) => m.id);
+                                    chosenMonths = all.slice(0, multiplier);
+                                  }
+                                  setSelectedBatchMonths(chosenMonths);
+                                  setPaymentAmount(String(rate * chosenMonths.length));
+                                }
+                              }}
+                              className={`px-2.5 py-1 rounded-lg border font-bold shrink-0 transition-all cursor-pointer ${
+                                isActive
+                                  ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs ring-1 ring-emerald-500'
+                                  : 'bg-emerald-50 hover:bg-emerald-100 border-emerald-200 text-emerald-900'
+                              }`}
                             >
-                              {isBn ? `${toBengaliNumerals(multiplier)} মাস: ${formatBDT(totalVal, isBn)}` : `${multiplier} mo: ${formatBDT(totalVal, isBn)}`}
+                              {isBn
+                                ? `${toBengaliNumerals(multiplier)} মাস: ৳${toBengaliNumerals(totalVal)}`
+                                : `${multiplier} mo: ৳${totalVal}`}
                             </button>
                           );
                         })}
@@ -1555,50 +1677,93 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       id="checkbox-batch-pay"
                       type="checkbox"
                       checked={isBatchMonth}
-                      onChange={(e) => setIsBatchMonth(e.target.checked)}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setIsBatchMonth(checked);
+                        if (selectedPaymentMember) {
+                          const rate = getMemberMonthlyRate(selectedPaymentMember);
+                          if (checked) {
+                            const target = selectedBatchMonths.length > 0 ? selectedBatchMonths : [Number(paymentMonth) || 1];
+                            setSelectedBatchMonths(target);
+                            setPaymentAmount(String(rate * target.length));
+                          } else {
+                            setPaymentAmount(String(rate));
+                          }
+                        }
+                      }}
                       className="rounded-sm text-emerald-600 focus:ring-emerald-500 w-4 h-4 cursor-pointer"
                     />
-                    <label htmlFor="checkbox-batch-pay" className="text-xs font-semibold text-slate-700 cursor-pointer">
-                      {isBn ? 'একাধিক মাসের কিস্তি একসাথে জমা দিন (Batch Entry)' : 'Batch multi-month payment'}
+                    <label htmlFor="checkbox-batch-pay" className="text-xs font-bold text-slate-800 cursor-pointer flex items-center gap-1.5">
+                      <span>{isBn ? 'একাধিক মাসের কিস্তি একসাথে জমা দিন (Batch Entry)' : 'Batch multi-month payment'}</span>
+                      {isBatchMonth && (
+                        <span className="text-3xs font-extrabold text-emerald-800 bg-emerald-100 px-1.5 py-0.5 rounded-md border border-emerald-300">
+                          {toBengaliNumerals(selectedBatchMonths.length)} {isBn ? 'মাস নির্বাচিত' : 'mos selected'}
+                        </span>
+                      )}
                     </label>
                   </div>
                 </div>
 
                 {isBatchMonth && (
-                  <div className="mt-3 p-3 bg-white rounded-2xl border border-slate-200 space-y-2.5">
+                  <div className="mt-3 p-3.5 bg-emerald-50/50 rounded-2xl border border-emerald-200 space-y-3">
                     <div className="flex items-center justify-between flex-wrap gap-2">
-                      <label className="block text-2xs font-bold uppercase text-slate-500">
-                        {isBn ? 'পরিশোধিত মাসগুলো নির্বাচন করুন:' : 'Select Paid Months:'}
-                      </label>
+                      <div>
+                        <label className="block text-2xs font-bold uppercase text-emerald-900 flex items-center gap-1">
+                          <Calendar className="w-3.5 h-3.5 text-emerald-700" />
+                          <span>{isBn ? 'পরিশোধিত মাসগুলো নির্বাচন করুন:' : 'Select Paid Months:'}</span>
+                        </label>
+                        {selectedPaymentMember && (
+                          <span className="text-3xs text-emerald-700 font-semibold">
+                            {isBn
+                              ? `প্রতি শেয়ার ৳১,০০০ হিসেবে এই সদস্যের মাসিক কিস্তি ৳${toBengaliNumerals(getMemberMonthlyRate(selectedPaymentMember))} (${toBengaliNumerals(selectedPaymentMember.shares || 1)}টি শেয়ার)`
+                              : `Rate: ৳${getMemberMonthlyRate(selectedPaymentMember)}/mo (${selectedPaymentMember.shares || 1} shares @ ৳1,000/share)`}
+                          </span>
+                        )}
+                      </div>
                       {selectedPaymentMember && (
-                        <div className="flex items-center gap-2 text-2xs">
+                        <div className="flex items-center gap-1.5 text-2xs">
                           <button
                             type="button"
                             onClick={() => {
                               const unpaid = MONTHS.filter((m) => !paidMonthsMapForYear.has(m.id)).map((m) => m.id);
-                              setSelectedBatchMonths(unpaid);
-                              const baseRate = selectedPaymentMember.monthlyShareAmount || ((selectedPaymentMember.shares || 1) * 1000);
-                              setPaymentAmount(String(baseRate * unpaid.length));
+                              const target = unpaid.length > 0 ? unpaid : [Number(paymentMonth) || 1];
+                              setSelectedBatchMonths(target);
+                              const rate = getMemberMonthlyRate(selectedPaymentMember);
+                              setPaymentAmount(String(rate * target.length));
                             }}
-                            className="px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold border border-amber-300 transition-colors cursor-pointer"
+                            className="px-2.5 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold border border-amber-300 transition-colors cursor-pointer shadow-2xs"
                           >
-                            {isBn ? '⚡ সকল বকেয়া মাস নির্বাচন করুন' : 'Select All Due Months'}
+                            {isBn ? '⚡ সকল বকেয়া মাস নির্বাচন' : 'Select All Due Months'}
                           </button>
                           <button
                             type="button"
                             onClick={() => {
-                              setSelectedBatchMonths(MONTHS.map((m) => m.id));
-                              const baseRate = selectedPaymentMember.monthlyShareAmount || ((selectedPaymentMember.shares || 1) * 1000);
-                              setPaymentAmount(String(baseRate * 12));
+                              const allMonths = MONTHS.map((m) => m.id);
+                              setSelectedBatchMonths(allMonths);
+                              const rate = getMemberMonthlyRate(selectedPaymentMember);
+                              setPaymentAmount(String(rate * 12));
                             }}
-                            className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold border border-slate-300 transition-colors cursor-pointer"
+                            className="px-2.5 py-1 rounded-lg bg-white hover:bg-slate-100 text-slate-800 font-bold border border-slate-300 transition-colors cursor-pointer shadow-2xs"
                           >
                             {isBn ? '১২ মাস নির্বাচন' : 'All 12 Months'}
                           </button>
+                          {selectedBatchMonths.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedBatchMonths([]);
+                                setPaymentAmount('0');
+                              }}
+                              className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold border border-slate-200 transition-colors cursor-pointer"
+                            >
+                              {isBn ? 'ক্লিয়ার' : 'Clear'}
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
 
+                    {/* Month Tiles Grid */}
                     <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
                       {MONTHS.map((m) => {
                         const isSelected = selectedBatchMonths.includes(m.id);
@@ -1609,28 +1774,67 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             key={m.id}
                             type="button"
                             onClick={() => {
+                              let newBatch: number[];
                               if (isSelected) {
-                                setSelectedBatchMonths(selectedBatchMonths.filter((x) => x !== m.id));
+                                newBatch = selectedBatchMonths.filter((x) => x !== m.id);
                               } else {
-                                setSelectedBatchMonths([...selectedBatchMonths, m.id].sort((a, b) => a - b));
+                                newBatch = [...selectedBatchMonths, m.id].sort((a, b) => a - b);
+                              }
+                              setSelectedBatchMonths(newBatch);
+                              if (selectedPaymentMember) {
+                                const rate = getMemberMonthlyRate(selectedPaymentMember);
+                                setPaymentAmount(String(rate * newBatch.length));
                               }
                             }}
-                            className={`py-2 px-2 rounded-xl text-xs font-semibold border transition-all flex items-center justify-between cursor-pointer ${
+                            className={`py-2 px-2.5 rounded-xl text-xs font-bold border transition-all flex items-center justify-between cursor-pointer ${
                               isSelected
-                                ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
+                                ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs ring-2 ring-emerald-400'
                                 : isAlreadyPaid
-                                ? 'bg-emerald-50 text-emerald-900 border-emerald-200 hover:bg-emerald-100'
-                                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                                ? 'bg-emerald-100/70 text-emerald-950 border-emerald-300 hover:bg-emerald-200/70'
+                                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
                             }`}
                           >
                             <span>{isBn ? m.shortBn : m.shortEn}</span>
                             {isAlreadyPaid ? (
-                              <span className="text-[10px] text-emerald-700 font-bold">✓</span>
+                              <span className="text-3xs text-emerald-800 font-extrabold bg-emerald-200 px-1 py-0.2 rounded-sm" title={isBn ? 'ইতোমধ্যে জমা আছে' : 'Already Paid'}>
+                                ✓ {isBn ? 'জমা' : 'Paid'}
+                              </span>
+                            ) : isSelected ? (
+                              <span className="text-3xs font-extrabold text-white">✓</span>
                             ) : null}
                           </button>
                         );
                       })}
                     </div>
+
+                    {/* Batch Calculation Summary Breakdown Box */}
+                    {selectedPaymentMember && (
+                      <div className="p-3 bg-white rounded-xl border border-emerald-200 flex items-center justify-between flex-wrap gap-2 shadow-2xs">
+                        <div className="text-xs">
+                          <span className="text-slate-600 font-medium">
+                            {isBn ? 'হিসাব বিবরণী:' : 'Breakdown:'}{' '}
+                          </span>
+                          <span className="font-bold text-slate-800">
+                            {isBn ? `${toBengaliNumerals(selectedBatchMonths.length)}টি মাস` : `${selectedBatchMonths.length} Months`}
+                          </span>
+                          <span className="text-slate-400 mx-1.5">×</span>
+                          <span className="font-bold text-emerald-700">
+                            ৳{toBengaliNumerals(getMemberMonthlyRate(selectedPaymentMember))}
+                            <span className="text-3xs font-medium text-slate-500 ml-1">
+                              ({isBn ? `${toBengaliNumerals(selectedPaymentMember.shares || 1)}টি শেয়ার` : `${selectedPaymentMember.shares || 1} shares`})
+                            </span>
+                          </span>
+                          <span className="text-slate-400 mx-1.5">=</span>
+                          <span className="font-black text-emerald-900 bg-emerald-100 px-2.5 py-0.5 rounded-lg border border-emerald-300">
+                            ৳{toBengaliNumerals(selectedBatchMonths.length * getMemberMonthlyRate(selectedPaymentMember))}
+                          </span>
+                        </div>
+                        <div className="text-3xs font-bold text-emerald-800 bg-emerald-50 px-2 py-1 rounded-md border border-emerald-200 flex items-center gap-1">
+                          <ShieldCheck className="w-3.5 h-3.5 text-emerald-700" />
+                          <span>{isBn ? 'শেয়ার অনুপাতে প্রতি মাসে ঠিক এই পরিমাণই জমা হবে' : 'Each month gets exact share amount'}</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1794,31 +1998,78 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </select>
                 </div>
 
-                {/* Monthly Share Amount */}
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">{isBn ? 'মাসিক সঞ্চয়ের পরিমাণ (টাকা) *' : 'Monthly Due (BDT) *'}</label>
-                  <input
-                    type="number"
-                    min="100"
-                    step="100"
-                    required
-                    value={newMemberShareAmount}
-                    onChange={(e) => setNewMemberShareAmount(e.target.value)}
-                    className="w-full p-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                  />
-                </div>
-
                 {/* Shares count */}
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">{isBn ? 'শেয়ার সংখ্যা' : 'Shares Count'}</label>
+                  <label className="block font-bold text-slate-700 mb-1 flex items-center justify-between">
+                    <span>{isBn ? 'শেয়ার সংখ্যা (১ শেয়ার = ৳১,০০০) *' : 'Shares (1 share = ৳1,000) *'}</span>
+                    <span className="text-3xs font-extrabold text-amber-800 bg-amber-100 px-1.5 py-0.2 rounded">
+                      ৳১,০০০/শেয়ার
+                    </span>
+                  </label>
                   <input
                     type="number"
                     min="1"
-                    max="10"
+                    max="20"
                     value={newMemberShares}
-                    onChange={(e) => setNewMemberShares(Number(e.target.value))}
-                    className="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                    onChange={(e) => {
+                      const count = Math.max(1, Number(e.target.value) || 1);
+                      setNewMemberShares(count);
+                      setNewMemberShareAmount(String(count * 1000));
+                    }}
+                    className="w-full p-2.5 bg-white border border-slate-300 rounded-xl font-bold text-slate-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
                   />
+                  {/* Quick share buttons */}
+                  <div className="flex gap-1 mt-1.5 overflow-x-auto pb-1">
+                    {[1, 2, 3, 4, 5].map((s) => (
+                      <button
+                        key={s}
+                        type="button"
+                        onClick={() => {
+                          setNewMemberShares(s);
+                          setNewMemberShareAmount(String(s * 1000));
+                        }}
+                        className={`px-2 py-0.5 rounded-lg text-3xs font-bold border transition-colors shrink-0 cursor-pointer ${
+                          newMemberShares === s
+                            ? 'bg-amber-600 text-white border-amber-600 shadow-2xs'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-amber-50'
+                        }`}
+                      >
+                        {toBengaliNumerals(s)}টি (৳{toBengaliNumerals(s * 1000)})
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Monthly Share Amount */}
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1 flex items-center justify-between">
+                    <span>{isBn ? 'নির্ধারিত মাসিক সঞ্চয় (টাকা) *' : 'Fixed Monthly Due (BDT) *'}</span>
+                    <span className="text-3xs text-emerald-700 font-extrabold bg-emerald-50 px-1.5 py-0.2 rounded border border-emerald-200">
+                      মোট: ৳{toBengaliNumerals(newMemberShareAmount || (newMemberShares * 1000))}
+                    </span>
+                  </label>
+                  <input
+                    type="number"
+                    min={newMemberShares * 1000}
+                    step="500"
+                    required
+                    value={newMemberShareAmount}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      const minRate = (newMemberShares || 1) * 1000;
+                      if (val < minRate) {
+                        setNewMemberShareAmount(String(minRate));
+                      } else {
+                        setNewMemberShareAmount(e.target.value);
+                      }
+                    }}
+                    className="w-full p-2.5 bg-white border border-slate-300 rounded-xl font-black text-emerald-900 focus:ring-2 focus:ring-amber-500 focus:outline-none"
+                  />
+                  <p className="text-3xs text-slate-500 mt-1">
+                    {isBn
+                      ? `🔒 প্রতি শেয়ার ৳১,০০০ হিসেবে ন্যূনতম ৳${toBengaliNumerals(newMemberShares * 1000)}/মাস`
+                      : `🔒 Minimum ৳${newMemberShares * 1000}/mo based on ${newMemberShares} shares`}
+                  </p>
                 </div>
               </div>
 
@@ -2561,6 +2812,98 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               </div>
             </div>
+
+            {/* ================================================================= */}
+            {/* PURGE DUMMY DATA CARD */}
+            {/* ================================================================= */}
+            <div className="bg-rose-50/70 border border-rose-200 rounded-3xl p-5 sm:p-6 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                <div className="flex items-start space-x-3.5">
+                  <div className="w-12 h-12 rounded-2xl bg-rose-100 flex items-center justify-center text-rose-600 font-bold shrink-0 border border-rose-200">
+                    <Trash2 className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-rose-950 flex items-center gap-2">
+                      <span>{isBn ? 'ডামি ও স্যাম্পল ডাটা অপসারণ' : 'Purge Dummy & Demo Data'}</span>
+                      <span className="text-3xs bg-rose-600 text-white font-bold px-2 py-0.5 rounded-full uppercase">Clean Database</span>
+                    </h4>
+                    <p className="text-xs text-rose-800/90 mt-1 max-w-xl">
+                      {isBn
+                        ? 'আপনার ফায়ারবেস ডাটাবেস থেকে সকল ডেমো/স্যাম্পল সদস্য (যেমন kadir_saudi, rafiq_dubai ইত্যাদি), স্বয়ংক্রিয় তৈরি হওয়া ডামি পেমেন্ট ও নমুনা বিনিয়োগ প্রকল্প সম্পূর্ণ মুছে ফেলুন।'
+                        : 'Permanently remove all initial demo/seed members, sample payments, and mock investments from your live Firestore database.'}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowPurgeConfirm(true)}
+                  disabled={isPurgingDummy}
+                  className="px-4 py-2.5 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white rounded-xl text-xs font-bold shadow-md shadow-rose-900/20 flex items-center justify-center gap-1.5 shrink-0 cursor-pointer disabled:opacity-50 transition-all"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>{isBn ? 'সব ডামি ডাটা মুছুন' : 'Purge All Dummy Data'}</span>
+                </button>
+              </div>
+
+              {purgeResult && (
+                <div className="p-3.5 rounded-xl bg-white border border-rose-200 text-xs font-bold text-slate-800 flex items-center gap-2 animate-in fade-in">
+                  <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{purgeResult}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Purge Confirm Modal */}
+            {showPurgeConfirm && (
+              <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in">
+                <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-rose-200 space-y-4 animate-in zoom-in-95">
+                  <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mx-auto">
+                    <Trash2 className="w-6 h-6" />
+                  </div>
+
+                  <div className="text-center space-y-2">
+                    <h3 className="text-lg font-black text-slate-900">
+                      {isBn ? 'সব ডামি ডাটা মুছে ফেলতে চান?' : 'Purge all dummy & mock data?'}
+                    </h3>
+                    <p className="text-xs text-slate-600 leading-relaxed">
+                      {isBn
+                        ? 'এটি আপনার ডাটাবেস থেকে শুধুমাত্র প্রাথমিক ডামি/টেস্ট মেম্বার, ডামি কিস্তির ভাউচার এবং স্যাম্পল বিনিয়োগ রেকর্ড স্থায়ীভাবে মুছে দেবে। আপনার তৈরি করা আসল সদস্য বা তথ্য অক্ষুণ্ণ থাকবে।'
+                        : 'This will permanently delete all mock/seed members, sample payments, and mock investments from Firestore. Real data created by you will remain intact.'}
+                    </p>
+                  </div>
+
+                  <div className="flex gap-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowPurgeConfirm(false)}
+                      disabled={isPurgingDummy}
+                      className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                    >
+                      {isBn ? 'বাতিল' : 'Cancel'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handlePurgeDummyData}
+                      disabled={isPurgingDummy}
+                      className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold shadow-lg shadow-rose-900/30 flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                    >
+                      {isPurgingDummy ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          <span>{isBn ? 'মুছে ফেলা হচ্ছে...' : 'Purging...'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 className="w-4 h-4" />
+                          <span>{isBn ? 'হ্যাঁ, ডামি ডাটা মুছুন' : 'Yes, Purge Now'}</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* ================================================================= */}
             {/* DELETE FUND CONFIRMATION MODAL */}

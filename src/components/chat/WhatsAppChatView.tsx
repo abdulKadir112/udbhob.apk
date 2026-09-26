@@ -40,11 +40,13 @@ import {
   Smartphone,
   Download,
   WifiOff,
+  Wallet,
 } from 'lucide-react';
 import { useChat } from '../../context/ChatContext';
 import { useAuth } from '../../context/AuthContext';
+import { safeVibrate } from '../../utils/pushNotification';
 import { useFund } from '../../context/FundContext';
-import { ChatMessage, CallType, UserPresence, UserRole } from '../../types';
+import { ChatMessage, CallType, UserPresence, UserRole, Member } from '../../types';
 import { soundEffects } from '../../utils/audioFeedback';
 import { ActiveMembersDrawer } from './ActiveMembersDrawer';
 import { SwipeableMessageItem } from './SwipeableMessageItem';
@@ -65,6 +67,7 @@ interface WhatsAppChatViewProps {
   onOpenFundModal?: () => void;
   language?: 'bn' | 'en';
   setLanguage?: (lang: 'bn' | 'en') => void;
+  onSelectMember?: (member: Member) => void;
 }
 
 const QUICK_CHIPS = [
@@ -86,6 +89,7 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
   onOpenFundModal,
   language = 'bn',
   setLanguage,
+  onSelectMember,
 }) => {
   const {
     messages,
@@ -113,6 +117,15 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
 
   const { currentMember, userSession, isAdmin, logout } = useAuth();
   const { currentFund, soundEnabled, setSoundEnabled, notifications, members } = useFund();
+
+  const effectiveMember = useMemo(() => {
+    return (
+      currentMember ||
+      (userSession?.memberId ? members.find((m) => m.id === userSession.memberId) : null) ||
+      (userSession?.username ? members.find((m) => m.username === userSession.username) : null) ||
+      (members.length > 0 ? members[0] : null)
+    );
+  }, [currentMember, userSession, members]);
 
   const [inputText, setInputText] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -383,11 +396,7 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
     setRecordingSeconds(0);
     audioChunksRef.current = [];
 
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      try {
-        navigator.vibrate(35);
-      } catch {}
-    }
+    safeVibrate(35);
 
     if (soundEnabled) {
       soundEffects.playRecordStart();
@@ -583,11 +592,7 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
     } else {
       // Held to record - release to send automatically!
       finishRecordingAudio();
-      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-        try {
-          navigator.vibrate(20);
-        } catch {}
-      }
+      safeVibrate(20);
     }
   };
 
@@ -877,6 +882,44 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
                   </p>
                 </div>
 
+                {/* 1. My Personal Profile & Financial Stats */}
+                {onOpenProfileModal && (
+                  <button
+                    onClick={() => {
+                      setIsProfileMenuOpen(false);
+                      onOpenProfileModal();
+                    }}
+                    className="w-full text-left px-3 py-2 text-[11px] text-emerald-950 hover:bg-emerald-50 flex items-center justify-between font-bold bg-emerald-50/60 border-b border-emerald-100/70"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <Wallet className="w-3.5 h-3.5 text-emerald-600" />
+                      <span>{isBn ? 'আমার প্রোফাইল ও আর্থিক হিসাব' : 'My Profile & Financial Stats'}</span>
+                    </span>
+                    <span className="text-3xs bg-emerald-600 text-white px-1.5 py-0.2 rounded font-extrabold">
+                      {isBn ? 'শেয়ার ও লাভ' : 'Stats'}
+                    </span>
+                  </button>
+                )}
+
+                {/* 2. Direct 12-Month Statement & Slip */}
+                {effectiveMember && onSelectMember && (
+                  <button
+                    onClick={() => {
+                      setIsProfileMenuOpen(false);
+                      onSelectMember(effectiveMember);
+                    }}
+                    className="w-full text-left px-3 py-2 text-[11px] text-slate-800 hover:bg-slate-50 flex items-center justify-between font-medium border-b border-slate-100"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <FileText className="w-3.5 h-3.5 text-amber-600" />
+                      <span>{isBn ? '১২ মাসের সঞ্চয় ও রসিদ স্লিপ' : '12-Month Statement Slip'}</span>
+                    </span>
+                    <span className="text-3xs text-amber-800 bg-amber-100 px-1 py-0.2 rounded font-bold">
+                      {isBn ? 'রশিদ' : 'Slip'}
+                    </span>
+                  </button>
+                )}
+
                 {onOpenProfileModal && (
                   <button
                     onClick={() => {
@@ -886,7 +929,7 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
                     className="w-full text-left px-3 py-2 text-[11px] text-emerald-800 hover:bg-emerald-50 flex items-center gap-1.5 font-semibold"
                   >
                     <Camera className="w-3.5 h-3.5 text-emerald-600" />
-                    <span>{isBn ? 'প্রোফাইল ও ছবি পরিবর্তন' : 'Edit Profile & Avatar'}</span>
+                    <span>{isBn ? 'প্রোফাইল সেটিংস ও ছবি পরিবর্তন' : 'Edit Profile & Avatar'}</span>
                   </button>
                 )}
 
@@ -942,13 +985,17 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
                 <button
                   onClick={() => {
                     setIsProfileMenuOpen(false);
-                    handleEnableNotifications();
+                    if (typeof window !== 'undefined') {
+                      window.dispatchEvent(new CustomEvent('probashi_open_permissions_modal'));
+                    } else {
+                      handleEnableNotifications();
+                    }
                   }}
                   className="w-full text-left px-3 py-2 text-[11px] text-slate-700 hover:bg-slate-50 flex items-center justify-between border-t border-slate-100"
                 >
                   <span className="flex items-center gap-1.5">
                     <Bell className="w-3.5 h-3.5 text-amber-500" />
-                    <span>{isBn ? 'নোটিফিকেশন, মাইক ও ক্যামেরা' : 'Alerts, Mic & Camera'}</span>
+                    <span>{isBn ? 'নোটিফিকেশন, রিংটোন, মাইক ও ক্যামেরা' : 'Alerts, Ringtone, Mic & Camera'}</span>
                   </span>
                   <span className={`text-[10px] font-bold ${notifPermission === 'granted' ? 'text-emerald-600' : 'text-amber-600'}`}>
                     {notifPermission === 'granted' ? (isBn ? 'সক্রিয় ✓' : 'Active ✓') : (isBn ? 'অনুমতি দিন' : 'Enable')}
@@ -1042,31 +1089,7 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
         </div>
       )}
 
-      {/* Lock-Screen Calls & Notification Permission Activation Banner */}
-      {notifPermission !== 'granted' && (
-        <div className="bg-gradient-to-r from-emerald-800 to-teal-800 text-emerald-50 text-[11.5px] px-3 py-1.5 flex items-center justify-between font-medium shadow-xs z-20 shrink-0 border-b border-emerald-900">
-          <div className="flex items-center space-x-1.5 truncate mr-2">
-            <Bell className="w-3.5 h-3.5 text-amber-300 animate-bounce shrink-0" />
-            <span className="truncate">
-              {isBn
-                ? 'ফোন লক থাকলেও কল ও এসএমএস পেতে নোটিফিকেশন চালু করুন'
-                : 'Enable notifications to receive calls & messages when phone is locked'}
-            </span>
-          </div>
-          <button
-            onClick={handleEnableNotifications}
-            disabled={isTestingNotif}
-            className="px-2.5 py-0.5 rounded-full bg-emerald-400 text-emerald-950 hover:bg-emerald-300 text-[10px] font-bold shrink-0 transition-colors shadow-xs cursor-pointer flex items-center gap-1"
-          >
-            {isTestingNotif ? (
-              <span className="w-3 h-3 border border-emerald-950 border-t-transparent rounded-full animate-spin" />
-            ) : (
-              <Sparkles className="w-2.5 h-2.5" />
-            )}
-            <span>{isBn ? 'চালু করুন' : 'Enable'}</span>
-          </button>
-        </div>
-      )}
+
 
       {/* 1-to-1 Direct Chat Selection Bar (When in Direct mode) */}
       {selectedChatTab === 'direct' && (
@@ -1210,18 +1233,25 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
       {/* 2.1 Background & Lock-Screen Call Notification, Mic & Camera Setup Banner */}
       {notifPermission !== 'granted' && !isNotifBannerDismissed && (
         <div className="bg-gradient-to-r from-amber-600 via-emerald-700 to-teal-800 text-white px-3 py-2 shadow-sm border-b border-emerald-600 flex items-center justify-between z-10 shrink-0 animate-fadeIn">
-          <div className="flex items-center space-x-2 overflow-hidden mr-2">
+          <div
+            onClick={() => {
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('probashi_open_permissions_modal'));
+              }
+            }}
+            className="flex items-center space-x-2 overflow-hidden mr-2 cursor-pointer"
+          >
             <div className="w-6 h-6 rounded-full bg-white/20 flex items-center justify-center shrink-0 animate-pulse">
               <Bell className="w-3.5 h-3.5 text-white" />
             </div>
             <div className="text-[11px] leading-tight">
               <span className="font-bold block text-emerald-100">
-                {isBn ? 'নোটিফিকেশন, মাইক ও ক্যামেরা পারমিশন:' : 'Notifications, Mic & Camera Permissions:'}
+                {isBn ? 'নোটিফিকেশন, রিংটোন, মাইক ও ক্যামেরা:' : 'Notifications, Ringtone, Mic & Camera:'}
               </span>
               <span className="text-white/90 text-[10px]">
                 {isBn
-                  ? 'ফোন লকে কল পাওয়া, ভয়েস মেসেজ ও ভিডিও কলের জন্য এক ক্লিকেই সব অনুমোদন দিন।'
-                  : 'Enable lock-screen calls, voice notes & video chat in one seamless click.'}
+                  ? 'ফোন লকে কল পাওয়া, মিষ্টি রিংটোন, ভয়েস ও ভিডিও কলের জন্য এক ক্লিকেই সব চালু করে নিন।'
+                  : 'Enable lock-screen calls, ringtone, voice notes & video chat in one seamless click.'}
               </span>
             </div>
           </div>

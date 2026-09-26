@@ -23,12 +23,14 @@ import {
   BellRing,
   Smartphone,
   Download,
+  FileText,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useFund } from '../context/FundContext';
 import { useChat } from '../context/ChatContext';
 import { formatBDT, toBengaliNumerals } from '../utils/formatters';
 import { PwaInstallModal } from './PwaInstallModal';
+import { Member } from '../types';
 
 interface NavbarProps {
   mainTab: 'chat' | 'fund';
@@ -43,6 +45,7 @@ interface NavbarProps {
   language: 'bn' | 'en';
   setLanguage: (lang: 'bn' | 'en') => void;
   onOpenNotifications: () => void;
+  onSelectMember?: (member: Member) => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -58,6 +61,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   language,
   setLanguage,
   onOpenNotifications,
+  onSelectMember,
 }) => {
   const { userRole, isAdmin, logout, currentUser, userSession, currentMember } = useAuth();
   const {
@@ -67,7 +71,6 @@ export const Navbar: React.FC<NavbarProps> = ({
     unreadNotificationCount,
     soundEnabled,
     setSoundEnabled,
-    seedDatabase,
     members,
     currentFund,
     allFunds,
@@ -75,6 +78,12 @@ export const Navbar: React.FC<NavbarProps> = ({
   } = useFund();
 
   const { onlineCount, unreadChatCount } = useChat();
+
+  const effectiveMember =
+    currentMember ||
+    (userSession?.memberId ? members.find((m) => m.id === userSession.memberId) : null) ||
+    (userSession?.username ? members.find((m) => m.username === userSession.username) : null) ||
+    (members.length > 0 ? members[0] : null);
 
   const [isYearDropdownOpen, setIsYearDropdownOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
@@ -517,16 +526,54 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           <div className="py-1">
+            {/* 1. My Personal Profile & Financial Stats */}
+            {onOpenProfileModal && (
+              <button
+                onClick={() => {
+                  if (onOpenProfileModal) onOpenProfileModal();
+                  setIsUserMenuOpen(false);
+                }}
+                className="w-full text-left px-4 py-2.5 text-xs text-emerald-950 hover:bg-emerald-50 flex items-center justify-between font-bold bg-emerald-50/60 border-b border-emerald-100/80 cursor-pointer"
+              >
+                <div className="flex items-center space-x-2">
+                  <Wallet className="w-4 h-4 text-emerald-600" />
+                  <span>{isBn ? 'আমার ব্যক্তিগত প্রোফাইল ও আর্থিক হিসাব' : 'My Profile & Financial Stats'}</span>
+                </div>
+                <span className="text-3xs bg-emerald-600 text-white px-2 py-0.5 rounded-full font-extrabold">
+                  {isBn ? 'শেয়ার ও লাভ' : 'Stats'}
+                </span>
+              </button>
+            )}
+
+            {/* 2. Direct 12-Month Statement & Slip */}
+            {effectiveMember && onSelectMember && (
+              <button
+                onClick={() => {
+                  onSelectMember(effectiveMember);
+                  setIsUserMenuOpen(false);
+                }}
+                className="w-full text-left px-4 py-2.5 text-xs text-slate-800 hover:bg-slate-50 flex items-center justify-between font-semibold border-b border-slate-100 cursor-pointer"
+              >
+                <div className="flex items-center space-x-2">
+                  <FileText className="w-4 h-4 text-amber-600" />
+                  <span>{isBn ? 'আমার ১২ মাসের সঞ্চয় ও রসিদ স্লিপ' : 'My 12-Month Statement Slip'}</span>
+                </div>
+                <span className="text-3xs text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded font-bold">
+                  {isBn ? 'রশিদ' : 'Slip'}
+                </span>
+              </button>
+            )}
+
             {/* Profile & Avatar Edit Option */}
             <button
               onClick={() => {
                 if (onOpenProfileModal) onOpenProfileModal();
                 setIsUserMenuOpen(false);
               }}
-              className="w-full text-left px-4 py-2 text-xs text-emerald-800 hover:bg-emerald-50 flex items-center space-x-2 font-semibold"
+              className="w-full text-left px-4 py-2 text-xs text-emerald-800 hover:bg-emerald-50 flex items-center space-x-2 font-semibold cursor-pointer"
             >
               <Camera className="w-4 h-4 text-emerald-600" />
-              <span>{isBn ? 'আমার প্রোফাইল ও ছবি পরিবর্তন' : 'Edit Profile & Avatar'}</span>
+              <span>{isBn ? 'আমার প্রোফাইল সেটিংস ও ছবি পরিবর্তন' : 'Edit Profile & Avatar'}</span>
             </button>
 
             {/* Fund Logo / Profile Edit Option (Admin only) */}

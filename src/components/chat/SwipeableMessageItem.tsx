@@ -19,6 +19,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { ChatMessage } from '../../types';
+import { safeVibrate } from '../../utils/pushNotification';
 
 const QUICK_EMOJIS = ['👍', '❤️', '😂', '😮', '😢', '🤲', '🔥', '👏', '💯', '🌸'];
 
@@ -97,11 +98,7 @@ export const SwipeableMessageItem: React.FC<SwipeableMessageItemProps> = ({
     longPressTimerRef.current = setTimeout(() => {
       didTriggerLongPressRef.current = true;
       setIsActionModalOpen(true);
-      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-        try {
-          navigator.vibrate([35, 20]);
-        } catch {}
-      }
+      safeVibrate([35, 20]);
     }, 360);
   };
 
@@ -148,11 +145,7 @@ export const SwipeableMessageItem: React.FC<SwipeableMessageItemProps> = ({
 
     if (translateX >= 40) {
       onReply(msg);
-      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-        try {
-          navigator.vibrate(20);
-        } catch {}
-      }
+      safeVibrate(20);
     }
 
     setTranslateX(0);

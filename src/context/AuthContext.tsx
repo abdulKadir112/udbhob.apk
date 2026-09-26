@@ -14,7 +14,7 @@ import { collection, query, where, getDocs, doc, setDoc, getDoc, updateDoc, addD
 import { auth, db } from '../firebase/config';
 import { Member, UserRole, UserSession, Fund } from '../types';
 import { cleanForFirestore } from '../utils/firestoreUtils';
-import { DEFAULT_FUND_ID, INITIAL_MEMBERS } from '../data/seedData';
+import { DEFAULT_FUND_ID } from '../data/seedData';
 
 interface AuthContextType {
   currentUser: FirebaseUser | null;
@@ -27,8 +27,6 @@ interface AuthContextType {
   loading: boolean;
   loginWithCredentials: (identifier: string, pass: string, preferredRole?: 'member' | 'admin') => Promise<{ success: boolean; role: UserRole; fundId?: string; member?: Member }>;
   registerAdminWithFund: (email: string, pass: string, adminName: string, fundName: string) => Promise<void>;
-  loginAsDemoAdmin: () => Promise<void>;
-  loginAsDemoMember: (memberId?: string) => Promise<void>;
   updateUserAvatar: (avatarUrl: string) => Promise<void>;
   updateUserProfile: (updates: Partial<Member>) => Promise<void>;
   changeMemberPassword: (newPassword: string, currentPassword?: string) => Promise<void>;
@@ -272,35 +270,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.warn('Firestore member query error:', err);
       }
 
-      // Query 6: Local seed data fallback (for fresh deployments or network glitch)
-      if (!matchedMember) {
-        const seedFound = INITIAL_MEMBERS.find((m) => {
-          const mUser = (m.username || '').toLowerCase().trim();
-          const mUserStripped = mUser.startsWith('@') ? mUser.substring(1) : mUser;
-          const mEmail = (m.email || '').toLowerCase().trim();
-          const mPhone = (m.phone || '').trim();
-          const mPhoneDigits = mPhone.replace(/[^0-9]/g, '');
-          const mName = (m.name || '').toLowerCase().trim();
-          const mNameBn = (m.nameBn || '').trim();
-
-          return (
-            (strippedAtId && mUserStripped === strippedAtId) ||
-            (cleanId && mUser === cleanId) ||
-            (cleanId && mEmail === cleanId) ||
-            (rawId && mPhone === rawId) ||
-            (phoneDigits.length >= 6 && mPhoneDigits === phoneDigits) ||
-            (phoneDigits.length >= 6 && mPhoneDigits.endsWith(phoneDigits)) ||
-            (phoneDigits.length >= 6 && phoneDigits.endsWith(mPhoneDigits)) ||
-            (cleanId && mName === cleanId) ||
-            (rawId && mNameBn === rawId)
-          );
-        });
-
-        if (seedFound) {
-          matchedMember = { id: `seed_mem_${seedFound.username}`, ...seedFound } as Member;
-        }
-      }
-
       // If Member is found -> verify password!
       if (matchedMember) {
         const expectedPass = (matchedMember.passwordPlain || '123456').trim();
@@ -517,14 +486,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     saveSession(session);
-  };
-
-  const loginAsDemoAdmin = async () => {
-    throw new Error('ডেমো এডমিন অপশন নিষ্ক্রিয় করা হয়েছে। অনুগ্রহ করে আপনার আসল ফায়ারবেস একাউন্ট দিয়ে রেজিস্ট্রেশন বা লগইন করুন।');
-  };
-
-  const loginAsDemoMember = async () => {
-    throw new Error('ডেমো সদস্য অপশন নিষ্ক্রিয় করা হয়েছে। অনুগ্রহ করে এডমিন প্যানেলে সদস্য যোগ করার পর লগইন করুন।');
   };
 
   const updateUserAvatar = async (avatarUrl: string) => {
@@ -858,8 +819,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         loading,
         loginWithCredentials,
         registerAdminWithFund,
-        loginAsDemoAdmin,
-        loginAsDemoMember,
         updateUserAvatar,
         updateUserProfile,
         changeMemberPassword,

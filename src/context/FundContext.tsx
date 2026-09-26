@@ -26,12 +26,11 @@ import {
   Fund
 } from '../types';
 import {
-  INITIAL_MEMBERS,
-  INITIAL_INVESTMENTS,
-  INITIAL_NOTIFICATIONS,
   INITIAL_FUND,
   DEFAULT_FUND_ID,
-  DEFAULT_ADMIN_ID
+  DEFAULT_ADMIN_ID,
+  DUMMY_USERNAMES,
+  DUMMY_INVESTMENT_TITLES
 } from '../data/seedData';
 import { useAuth } from './AuthContext';
 import { sortPaymentsChronologically } from '../utils/formatters';
@@ -42,6 +41,7 @@ import {
   getCurrentDueReminderSlotInfo,
   DueMemberStatus
 } from '../utils/dueReminderEngine';
+import { safeVibrate } from '../utils/pushNotification';
 
 interface FundContextType {
   // Fund Metadata
@@ -137,6 +137,7 @@ interface FundContextType {
   };
 
   // System & Utilities
+  purgeAllDummyData: () => Promise<{ membersCount: number; paymentsCount: number; investmentsCount: number; notificationsCount: number }>;
   seedDatabase: (force?: boolean) => Promise<void>;
   loading: boolean;
   soundEnabled: boolean;
@@ -261,9 +262,9 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const unsub = onSnapshot(
       membersRef,
       (snapshot) => {
-        if (snapshot.empty && (!activeFundId || activeFundId === DEFAULT_FUND_ID || activeFundId === 'fund-main')) {
-          // Seed initial data ONLY for the default demo fund
-          seedDatabase(false);
+        if (snapshot.empty) {
+          setMembers([]);
+          setLoading(false);
           return;
         }
         const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() } as Member));
@@ -411,15 +412,11 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
         playSoundEffect(notif.priority === 'urgent' ? 'investment' : 'payment');
       }
 
-      // 2. Vibrate mobile phone (Android / Chrome)
-      if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-        try {
-          if (notif.priority === 'urgent') {
-            navigator.vibrate([300, 100, 300, 100, 300]);
-          } else {
-            navigator.vibrate([200, 100, 200]);
-          }
-        } catch {}
+      // 2. Vibrate mobile phone safely (Android / Chrome)
+      if (notif.priority === 'urgent') {
+        safeVibrate([300, 100, 300, 100, 300]);
+      } else {
+        safeVibrate([200, 100, 200]);
       }
 
       // 3. Native Push Notification (Desktop & Mobile Browser Heads-Up Alert)
@@ -1446,110 +1443,129 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return res;
   };
 
-  // ---------------- Seed Database ----------------
-  const seedDatabase = async (force: boolean = false) => {
+  // ---------------- Purge All Dummy/Demo Data from Firestore ----------------
+  const purgeAllDummyData = async (): Promise<{ membersCount: number; paymentsCount: number; investmentsCount: number; notificationsCount: number }> => {
     try {
       setLoading(true);
+      let membersCount = 0;
+      let paymentsCount = 0;
+      let investmentsCount = 0;
+      let notificationsCount = 0;
 
-      // Save initial fund
-      await setDoc(doc(db, 'funds', DEFAULT_FUND_ID), INITIAL_FUND);
-
-      // 1. Seed Members
+      // 1. Find & Delete Dummy Members
       const membersSnap = await getDocs(collection(db, 'members'));
-      if (membersSnap.empty || force) {
-        // Clear old if force
-        if (force) {
-          for (const docItem of membersSnap.docs) {
-            await deleteDoc(docItem.ref);
-          }
-        }
+      const dummyMemberIds = new Set<string>();
 
-        const memberIds: string[] = [];
-        for (const member of INITIAL_MEMBERS) {
-          const docRef = await addDoc(collection(db, 'members'), {
-            ...member,
-            fundId: DEFAULT_FUND_ID,
-            adminId: DEFAULT_ADMIN_ID,
-          });
-          memberIds.push(docRef.id);
-        }
+      for (const docItem of membersSnap.docs) {
+        const data = docItem.data();
+        const username = (data.username || '').toLowerCase().trim();
+        const notes = (data.notes || '');
+        const isDummy =
+          DUMMY_USERNAMES.includes(username) ||
+          docItem.id.startsWith('seed_') ||
+          notes.includes('ফান্ড সমন্বয়ক ও উদ্যোক্তা') ||
+          notes.includes('দুবাই প্রবাসী নিয়মিত সঞ্চয়কারী') ||
+          notes.includes('কাতার প্রবাসী') ||
+          notes.includes('মালয়েশিয়া প্রবাসী সদস্য') ||
+          notes.includes('কুয়েত প্রবাসী সদস্য') ||
+          notes.includes('ওমান প্রবাসী সদস্য') ||
+          notes.includes('বাহরাইন প্রবাসী সদস্য') ||
+          notes.includes('সিঙ্গাপুর প্রবাসী ২ শেয়ার') ||
+          (data.adminId === 'admin-probashi-main' && data.passwordPlain === '123456' && DUMMY_USERNAMES.includes(username));
 
-        // 2. Seed Payments for members (generate realistic records for 2024, 2025, 2026)
-        if (force) {
-          const oldPaymentsSnap = await getDocs(collection(db, 'payments'));
-          for (const docItem of oldPaymentsSnap.docs) {
-            await deleteDoc(docItem.ref);
-          }
-        }
-
-        const paymentMethods = ['bKash', 'Nagad', 'Rocket', 'Bank Transfer', 'Remittance'] as const;
-        const yearsToSeed = [2024, 2025, 2026];
-
-        for (let i = 0; i < memberIds.length; i++) {
-          const memberId = memberIds[i];
-          const memberObj = INITIAL_MEMBERS[i];
-          const monthlyAmount = memberObj.monthlyShareAmount;
-
-          for (const year of yearsToSeed) {
-            // For 2026, seed up to current month (e.g. month 1 and 2)
-            const maxMonth = year === 2026 ? 2 : 12;
-            for (let month = 1; month <= maxMonth; month++) {
-              // 85% chance of paid, 15% unpaid for realistic diaspora data
-              const isPaid = Math.random() > 0.12;
-              if (isPaid) {
-                const method = paymentMethods[Math.floor(Math.random() * paymentMethods.length)];
-                await addDoc(collection(db, 'payments'), {
-                  fundId: DEFAULT_FUND_ID,
-                  adminId: DEFAULT_ADMIN_ID,
-                  memberId,
-                  memberName: memberObj.nameBn || memberObj.name,
-                  year,
-                  month,
-                  amount: monthlyAmount,
-                  paymentDate: `${year}-${String(month).padStart(2, '0')}-${String(Math.floor(1 + Math.random() * 25)).padStart(2, '0')}`,
-                  paymentMethod: method,
-                  receiptNumber: `PMF-${year}-${String(month).padStart(2, '0')}-${Math.floor(1000 + Math.random() * 9000)}`,
-                  transactionId: `TXN${Math.floor(10000000 + Math.random() * 90000000)}`,
-                  verified: true,
-                  createdAt: new Date().toISOString(),
-                });
-              }
-            }
-          }
-        }
-
-        // 3. Seed Investments
-        if (force) {
-          const oldInvSnap = await getDocs(collection(db, 'investments'));
-          for (const docItem of oldInvSnap.docs) {
-            await deleteDoc(docItem.ref);
-          }
-        }
-        for (const inv of INITIAL_INVESTMENTS) {
-          await addDoc(collection(db, 'investments'), {
-            ...inv,
-            fundId: DEFAULT_FUND_ID,
-            adminId: DEFAULT_ADMIN_ID,
-          });
-        }
-
-        // 4. Seed Notifications
-        if (force) {
-          const oldNotifSnap = await getDocs(collection(db, 'notifications'));
-          for (const docItem of oldNotifSnap.docs) {
-            await deleteDoc(docItem.ref);
-          }
-        }
-        for (const notif of INITIAL_NOTIFICATIONS) {
-          await addDoc(collection(db, 'notifications'), {
-            ...notif,
-            fundId: DEFAULT_FUND_ID,
-            adminId: DEFAULT_ADMIN_ID,
-          });
+        if (isDummy) {
+          dummyMemberIds.add(docItem.id);
+          await deleteDoc(docItem.ref);
+          membersCount++;
         }
       }
+
+      // 2. Find & Delete Dummy Payments
+      const paymentsSnap = await getDocs(collection(db, 'payments'));
+      for (const docItem of paymentsSnap.docs) {
+        const data = docItem.data();
+        const rNo = (data.receiptNumber || '');
+        const mId = data.memberId;
+        const isDummyPayment =
+          rNo.startsWith('PMF-2024-') ||
+          rNo.startsWith('PMF-2025-') ||
+          rNo.startsWith('PMF-2026-') ||
+          (mId && dummyMemberIds.has(mId)) ||
+          (data.adminId === 'admin-probashi-main' && (!data.verifiedByAdminEmail || data.verifiedByAdminEmail === 'admin@udbhob.fund'));
+
+        if (isDummyPayment) {
+          await deleteDoc(docItem.ref);
+          paymentsCount++;
+        }
+      }
+
+      // 3. Find & Delete Dummy Investments
+      const invSnap = await getDocs(collection(db, 'investments'));
+      for (const docItem of invSnap.docs) {
+        const data = docItem.data();
+        const title = (data.title || '').trim();
+        const isDummyInv =
+          DUMMY_INVESTMENT_TITLES.includes(title) ||
+          title.includes('কুরবানী মোটাতাজাকরণ') ||
+          title.includes('লেয়ার মুরগির খামার') ||
+          title.includes('বায়োফ্লক ও পুকুরে মৎস্য চাষ') ||
+          title.includes('সুপারিশকৃত জরুরি আপদকালীন ঋণ') ||
+          title.includes('জমি লিজ (কৃষি ভূমি ১ বিঘা)') ||
+          (data.adminId === 'admin-probashi-main' && data.assignedPerson === 'তরিকুল ইসলাম (দেশে দায়িত্বপ্রাপ্ত)');
+
+        if (isDummyInv) {
+          await deleteDoc(docItem.ref);
+          investmentsCount++;
+        }
+      }
+
+      // 4. Find & Delete Dummy Notifications
+      const notifSnap = await getDocs(collection(db, 'notifications'));
+      for (const docItem of notifSnap.docs) {
+        const data = docItem.data();
+        const titleBn = data.titleBn || '';
+        const isDummyNotif =
+          titleBn.includes('নতুন মাসিক সঞ্চয় জমা হয়েছে') ||
+          titleBn.includes('মৎস্য চাষ প্রকল্পের মুনাফা বিতরণ') ||
+          titleBn.includes('গরু ১ পিস মোটাতাজাকরণ') ||
+          data.adminId === 'admin-probashi-main';
+
+        if (isDummyNotif) {
+          await deleteDoc(docItem.ref);
+          notificationsCount++;
+        }
+      }
+
+      // 5. Clear localStorage cached dummy members
+      try {
+        const keys = Object.keys(localStorage);
+        keys.forEach((k) => {
+          if (k.startsWith('udbhob_members_') || k.startsWith('udbhob_payments_')) {
+            localStorage.removeItem(k);
+          }
+        });
+      } catch {}
+
+      return { membersCount, paymentsCount, investmentsCount, notificationsCount };
     } catch (err) {
-      console.warn('Seed database error:', err);
+      console.error('Error purging dummy data:', err);
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ---------------- Initialize / Seed Database (Clean Only) ----------------
+  const seedDatabase = async (_force: boolean = false) => {
+    try {
+      setLoading(true);
+      // Ensure the initial fund document exists without any dummy members or fake payments
+      const fundDoc = await getDoc(doc(db, 'funds', DEFAULT_FUND_ID));
+      if (!fundDoc.exists()) {
+        await setDoc(doc(db, 'funds', DEFAULT_FUND_ID), INITIAL_FUND);
+      }
+    } catch (err) {
+      console.warn('Fund init error:', err);
     } finally {
       setLoading(false);
     }
@@ -1600,6 +1616,7 @@ export const FundProvider: React.FC<{ children: React.ReactNode }> = ({ children
         monthlyPaymentStatus,
         requestPushPermissions,
         pushPermissionStatus,
+        purgeAllDummyData,
         seedDatabase,
         loading,
         soundEnabled,

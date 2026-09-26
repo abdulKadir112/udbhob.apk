@@ -8,6 +8,7 @@ import {
   setDoc,
   deleteDoc,
   updateDoc,
+  getDoc,
   limit,
 } from 'firebase/firestore';
 import { db } from '../firebase/config';
@@ -30,10 +31,14 @@ import {
   triggerIncomingCallNotification,
   cancelIncomingCallNotification,
   sendPushNotification,
+  sendFcmCallPushNotification,
+  sendFcmChatPushNotification,
   registerServiceWorker,
   requestScreenWakeLock,
   releaseScreenWakeLock,
+  safeVibrate,
 } from '../utils/pushNotification';
+import { registerNativeCallBridge, endNativeCall } from '../utils/nativeCall';
 import {
   saveMessagesOffline,
   loadMessagesOffline,
@@ -41,6 +46,7 @@ import {
   getPendingOfflineMessages,
   removePendingOfflineMessage,
 } from '../utils/offlineStorage';
+import { formatLastActiveBn, getCountryBn, getCountryFlag, detectCountryFromPhone } from '../utils/formatters';
 
 const isDefaultFund = (id?: string | null): boolean => {
   return (
@@ -50,24 +56,6 @@ const isDefaultFund = (id?: string | null): boolean => {
     id === 'fund-main' ||
     id === 'fund_probashi_001'
   );
-};
-
-// Relative time helper in Bengali with accurate minute/hour tracking
-const formatRelativeTimeBn = (isoString?: string): string => {
-  if (!isoString) return 'নিষ্ক্রিয়';
-  const diffMs = Date.now() - new Date(isoString).getTime();
-  if (isNaN(diffMs) || diffMs < 0) return 'অনলাইনে আছেন';
-
-  const diffSec = Math.floor(diffMs / 1000);
-  if (diffSec < 45) return 'অনলাইনে আছেন';
-  if (diffSec < 90) return '১ মিনিট আগে সক্রিয় ছিলেন';
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin} মিনিট আগে সক্রিয় ছিলেন`;
-  const diffHours = Math.floor(diffMin / 60);
-  if (diffHours < 24) return `${diffHours} ঘণ্টা আগে সক্রিয় ছিলেন`;
-  const diffDays = Math.floor(diffHours / 24);
-  if (diffDays === 1) return 'গতকাল সক্রিয় ছিলেন';
-  return `${diffDays} দিন আগে সক্রিয় ছিলেন`;
 };
 
 interface ChatContextType {
@@ -110,7 +98,7 @@ const ChatContext = createContext<ChatContextType | undefined>(undefined);
 
 export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { userSession, currentMember, isAdmin, activeFundId } = useAuth();
-  const { members, soundEnabled } = useFund();
+  const { members, currentFund, soundEnabled } = useFund();
 
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
@@ -256,8 +244,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const myName = currentMember?.nameBn || currentMember?.name || userSession?.displayName || (isAdmin ? 'এডমিন আব্দুল কাদির' : 'প্রবাসী সদস্য');
   const myRole: UserRole = userSession?.role || (isAdmin ? 'admin' : 'member');
   const myAvatar = currentMember?.avatarUrl || userSession?.avatarUrl || '';
-  const myCountry = currentMember?.country || (isAdmin ? 'সৌদি আরব' : 'বাংলাদেশ');
-  const myCountryFlag = currentMember?.countryFlag || (isAdmin ? '🇸🇦' : '🇧🇩');
+  const detectedCountryFromPhone = detectCountryFromPhone(currentMember?.phone);
+  const myCountryRaw = currentMember?.country || (detectedCountryFromPhone ? detectedCountryFromPhone.nameBn : (isAdmin ? (currentFund?.country || 'সৌদি আরব') : 'বাংলাদেশ'));
+  const myCountry = getCountryBn(myCountryRaw) || 'সৌদি আরব';
+  const myCountryFlag = currentMember?.countryFlag || getCountryFlag(myCountryRaw) || (isAdmin ? '🇸🇦' : '🇧🇩');
   const effectiveFundId = activeFundId || currentMember?.fundId || DEFAULT_FUND_ID;
 
   // 1. Live Presence Heartbeat to Firestore
@@ -320,7 +310,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const unsub = onSnapshot(
         collection(db, 'user_presences'),
         (snapshot) => {
-          const dict: Record<string, { isOnline: boolean; lastActive: string }> = {};
+          const dict: Record<string, { isOnline: boolean; lastActive: string; country?: string; countryFlag?: string }> = {};
           const now = Date.now();
 
           snapshot.docs.forEach((d) => {
@@ -331,6 +321,8 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
             dict[d.id] = {
               isOnline: isFresh,
               lastActive: data.lastActive || new Date().toISOString(),
+              country: data.country,
+              countryFlag: data.countryFlag,
             };
           });
 
@@ -353,20 +345,25 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const myPresenceData = myId ? rawPresences[myId] : null;
 
     // Admin presence
+    const adminMember = members.find((m) => m.role === 'admin' || m.id === 'admin_master_001');
     const adminPresenceData = rawPresences['admin_master_001'] || rawPresences['admin'] || (isAdmin && myId ? rawPresences[myId] : null);
     const adminIsOnline = Boolean(adminPresenceData?.isOnline || isAdmin);
     const adminLastActive = adminPresenceData?.lastActive || new Date().toISOString();
+    const adminLastActiveFormatted = adminIsOnline ? 'বর্তমানে সক্রিয়' : formatLastActiveBn(adminLastActive).text;
+    const adminCountryRaw = adminPresenceData?.country || adminMember?.country || currentFund?.country || 'সৌদি আরব';
+    const adminCountryBn = getCountryBn(adminCountryRaw);
+    const adminCountryFlag = adminPresenceData?.countryFlag || adminMember?.countryFlag || getCountryFlag(adminCountryRaw) || '🇸🇦';
 
     const result: UserPresence[] = [
       {
         id: isAdmin && myId ? myId : 'admin_master_001',
-        name: isAdmin ? myName : 'এডমিন আব্দুল কাদির',
+        name: isAdmin ? myName : (adminMember?.nameBn || adminMember?.name || 'এডমিন আব্দুল কাদির'),
         role: 'admin',
         isOnline: adminIsOnline,
         lastActive: adminLastActive,
-        country: 'সৌদি আরব',
-        countryFlag: '🇸🇦',
-        customStatus: adminIsOnline ? 'অনলাইনে আছেন' : formatRelativeTimeBn(adminLastActive),
+        country: adminCountryBn,
+        countryFlag: adminCountryFlag,
+        customStatus: adminLastActiveFormatted,
       },
     ];
 
@@ -375,6 +372,30 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const isMe = m.id === myId || m.id === currentMember?.id;
       const isOnline = isMe ? true : Boolean(pData?.isOnline);
       const lastActive = isMe ? new Date().toISOString() : (pData?.lastActive || m.joinedDate || '');
+      
+      // Fetch and format server-stored country with multiple reliable fallbacks
+      let serverCountryRaw = pData?.country || m.country;
+      let serverCountryFlag = pData?.countryFlag || m.countryFlag;
+
+      // If missing, try to infer from phone number
+      if (!serverCountryRaw && m.phone) {
+        const detected = detectCountryFromPhone(m.phone);
+        if (detected) {
+          serverCountryRaw = detected.nameBn;
+          serverCountryFlag = detected.flag;
+        }
+      }
+
+      // If still missing, fallback to current fund country or default diaspora country
+      if (!serverCountryRaw) {
+        serverCountryRaw = currentFund?.country || 'সৌদি আরব';
+      }
+
+      const serverCountryBn = getCountryBn(serverCountryRaw) || 'সৌদি আরব';
+      if (!serverCountryFlag) {
+        serverCountryFlag = getCountryFlag(serverCountryRaw) || '🇸🇦';
+      }
+      const lastActiveStatus = isOnline ? 'বর্তমানে সক্রিয়' : formatLastActiveBn(lastActive).text;
 
       result.push({
         id: m.id,
@@ -382,10 +403,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         role: m.role || 'member',
         isOnline,
         lastActive,
-        country: m.country,
-        countryFlag: m.countryFlag,
+        country: serverCountryBn,
+        countryFlag: serverCountryFlag,
         avatar: m.avatarUrl,
-        customStatus: isOnline ? 'অনলাইনে আছেন' : formatRelativeTimeBn(lastActive),
+        customStatus: lastActiveStatus,
       });
     });
 
@@ -547,11 +568,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
               incomingToneStopRef.current();
               incomingToneStopRef.current = null;
             }
-            if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-              try {
-                navigator.vibrate(0);
-              } catch {}
-            }
+            safeVibrate(0);
             releaseScreenWakeLock();
           }
 
@@ -580,17 +597,16 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       incomingToneStopRef.current();
       incomingToneStopRef.current = null;
     }
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      try {
-        navigator.vibrate(0);
-      } catch {}
-    }
+    safeVibrate(0);
     if (callTimerRef.current) {
       clearInterval(callTimerRef.current);
       callTimerRef.current = null;
     }
     if (soundEnabled) {
       soundEffects.playEndCall();
+    }
+    if (activeCall?.id || incomingCall?.id) {
+      endNativeCall(activeCall?.id || incomingCall?.id).catch(() => {});
     }
     setActiveCall(null);
     setIncomingCall(null);
@@ -676,32 +692,51 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.warn('WebRTC caller startup error:', err);
     });
 
-    // Publish call signaling to Firestore
-    try {
-      const callDocData = {
-        id: callId,
-        fundId: effectiveFundId,
-        callerId: myId,
-        callerUsername: myUsername,
-        callerName: myName,
-        callerRole: myRole,
-        callerAvatar: myAvatar,
-        callerCountry: myCountry,
-        callerCountryFlag: myCountryFlag,
-        targetId: targetUser?.id || null,
-        targetName: targetUser?.name || null,
-        targetRole: targetUser?.role || null,
-        type,
-        isGroup,
-        status: 'ringing',
-        participants: cleanForFirestore(participants),
-        timestamp: Date.now(),
-        startedAt: Date.now(),
-      };
-      await setDoc(doc(db, 'active_calls', callId), cleanForFirestore(callDocData));
-    } catch (err) {
-      console.warn('Could not write call signaling to Firestore:', err);
-    }
+    // 🚀 Dispatch Firestore Signaling and High-Urgency FCM Push simultaneously in parallel
+    const callDocData = {
+      id: callId,
+      fundId: effectiveFundId,
+      callerId: myId,
+      callerUsername: myUsername,
+      callerName: myName,
+      callerRole: myRole,
+      callerAvatar: myAvatar,
+      callerCountry: myCountry,
+      callerCountryFlag: myCountryFlag,
+      targetId: targetUser?.id || null,
+      targetName: targetUser?.name || null,
+      targetRole: targetUser?.role || null,
+      type,
+      isGroup,
+      status: 'ringing',
+      participants: cleanForFirestore(participants),
+      timestamp: Date.now(),
+      startedAt: Date.now(),
+    };
+
+    const recipientIds = isGroup
+      ? members.filter((m) => m.id !== myId).map((m) => m.id)
+      : targetUser
+      ? [targetUser.id]
+      : [];
+
+    // Parallel instant dispatch (no waiting for one to start the other)
+    Promise.allSettled([
+      setDoc(doc(db, 'active_calls', callId), cleanForFirestore(callDocData)),
+      recipientIds.length > 0
+        ? sendFcmCallPushNotification({
+            targetMemberIds: recipientIds,
+            callerName: myName,
+            callerAvatar: myAvatar,
+            callType: type,
+            callId,
+            isGroup,
+            fundId: effectiveFundId,
+          })
+        : Promise.resolve(false),
+    ]).catch((err) => {
+      console.warn('Call signaling/push parallel dispatch note:', err);
+    });
 
     // Start timer for duration
     if (callTimerRef.current) clearInterval(callTimerRef.current);
@@ -725,11 +760,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       incomingToneStopRef.current = null;
     }
 
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      try {
-        navigator.vibrate(0);
-      } catch {}
-    }
+    safeVibrate(0);
 
     const currentName = myName;
     const currentAvatar = myAvatar;
@@ -806,13 +837,42 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }, 1000);
   };
 
-  // Listen for ServiceWorker answer/decline action messages
+  // Listen for ServiceWorker answer/decline action messages (from Lock Screen notification buttons)
   useEffect(() => {
     if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
       const messageHandler = (event: MessageEvent) => {
         if (event.data?.type === 'ANSWER_INCOMING_CALL') {
+          const callData = event.data?.data;
           if (incomingCallRef.current || incomingCall) {
             acceptIncomingCall();
+          } else if (callData?.callId) {
+            getDoc(doc(db, 'active_calls', callData.callId)).then((snap) => {
+              if (snap?.exists()) {
+                const data = snap.data();
+                if (data && (data.status === 'ringing' || data.status === 'calling')) {
+                  const incObj: IncomingCallState = {
+                    id: snap.id,
+                    type: data.type || 'audio',
+                    callerId: data.callerId,
+                    callerName: data.callerName || 'প্রবাসী সদস্য',
+                    callerAvatar: data.callerAvatar,
+                    callerRole: data.callerRole || 'member',
+                    callerCountry: data.callerCountry,
+                    callerCountryFlag: data.callerCountryFlag,
+                    targetId: data.targetId || null,
+                    targetName: data.targetName || null,
+                    isGroup: Boolean(data.isGroup),
+                    status: 'ringing',
+                    timestamp: data.timestamp || Date.now(),
+                  };
+                  setIncomingCall(incObj);
+                  incomingCallRef.current = incObj;
+                  setTimeout(() => {
+                    acceptIncomingCall();
+                  }, 200);
+                }
+              }
+            }).catch(() => {});
           }
         } else if (event.data?.type === 'DECLINE_INCOMING_CALL') {
           if (incomingCallRef.current || incomingCall) {
@@ -827,25 +887,124 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [incomingCall]);
 
-  // Check URL parameters when window opens from lock-screen notification click
+  // Listen for Native Android Capacitor Call events (Answer/Decline from native Lock Screen Activity)
   useEffect(() => {
-    if (typeof window !== 'undefined') {
+    const unbind = registerNativeCallBridge({
+      onAnswer: async (data) => {
+        console.log('[ChatContext] Native call answered event received:', data);
+        const targetCallId = data.callId;
+        if (incomingCallRef.current && incomingCallRef.current.id === targetCallId) {
+          acceptIncomingCall();
+        } else if (targetCallId) {
+          const callDocSnap = await getDoc(doc(db, 'active_calls', targetCallId)).catch(() => null);
+          if (callDocSnap?.exists()) {
+            const d = callDocSnap.data();
+            if (d && (d.status === 'ringing' || d.status === 'calling')) {
+              const incObj: IncomingCallState = {
+                id: callDocSnap.id,
+                type: d.type || 'audio',
+                callerId: d.callerId,
+                callerName: d.callerName || data.callerName || 'প্রবাসী সদস্য',
+                callerAvatar: d.callerAvatar,
+                callerRole: d.callerRole || 'member',
+                callerCountry: d.callerCountry,
+                callerCountryFlag: d.callerCountryFlag,
+                targetId: d.targetId || null,
+                targetName: d.targetName || null,
+                isGroup: Boolean(d.isGroup),
+                status: 'ringing',
+                timestamp: d.timestamp || Date.now(),
+              };
+              setIncomingCall(incObj);
+              incomingCallRef.current = incObj;
+              setTimeout(() => {
+                acceptIncomingCall();
+              }, 200);
+            }
+          }
+        }
+      },
+      onDecline: async (data) => {
+        console.log('[ChatContext] Native call declined event received:', data);
+        if (incomingCallRef.current || incomingCall) {
+          rejectIncomingCall();
+        } else if (data.callId) {
+          try {
+            await updateDoc(doc(db, 'active_calls', data.callId), {
+              status: 'rejected',
+              rejectedBy: myId,
+            });
+          } catch {}
+        }
+      },
+    });
+
+    return () => {
+      unbind();
+    };
+  }, [myId, incomingCall]);
+
+  // Check URL parameters when window opens from lock-screen notification click or push tap
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const checkUrlCallAction = async () => {
       try {
         const urlParams = new URLSearchParams(window.location.search);
         const callAction = urlParams.get('callAction');
         const callId = urlParams.get('callId');
-        if (callAction === 'answer') {
+
+        if (callAction === 'answer' && callId) {
+          // Request Screen Wake Lock so screen stays ON
+          requestScreenWakeLock();
+
           const currentInc = incomingCallRef.current || incomingCall;
-          if (currentInc && (!callId || callId === currentInc.id)) {
-            // Remove query params from url
+          if (currentInc && currentInc.id === callId) {
             const cleanUrl = window.location.pathname;
             window.history.replaceState({}, document.title, cleanUrl);
             acceptIncomingCall();
+          } else {
+            // Cold start: App was closed, fetch call doc directly from Firestore
+            const callDocSnap = await getDoc(doc(db, 'active_calls', callId)).catch(() => null);
+            if (callDocSnap?.exists()) {
+              const data = callDocSnap.data();
+              if (data && (data.status === 'ringing' || data.status === 'calling')) {
+                const incObj: IncomingCallState = {
+                  id: callDocSnap.id,
+                  type: data.type || 'audio',
+                  callerId: data.callerId,
+                  callerName: data.callerName || 'প্রবাসী সদস্য',
+                  callerAvatar: data.callerAvatar,
+                  callerRole: data.callerRole || 'member',
+                  callerCountry: data.callerCountry,
+                  callerCountryFlag: data.callerCountryFlag,
+                  targetId: data.targetId || null,
+                  targetName: data.targetName || null,
+                  isGroup: Boolean(data.isGroup),
+                  status: 'ringing',
+                  timestamp: data.timestamp || Date.now(),
+                };
+                setIncomingCall(incObj);
+                incomingCallRef.current = incObj;
+
+                const cleanUrl = window.location.pathname;
+                window.history.replaceState({}, document.title, cleanUrl);
+                
+                // Trigger accept directly
+                setTimeout(() => {
+                  acceptIncomingCall();
+                }, 300);
+              }
+            }
           }
         }
-      } catch {}
-    }
-  }, [incomingCall?.id]);
+      } catch (e) {
+        console.warn('URL call action handling error:', e);
+      }
+    };
+
+    checkUrlCallAction();
+  }, [incomingCall?.id, myId]);
 
   // Reject / Decline incoming call
   const rejectIncomingCall = async () => {
@@ -856,13 +1015,10 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       incomingToneStopRef.current = null;
     }
 
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      try {
-        navigator.vibrate(0);
-      } catch {}
-    }
+    safeVibrate(0);
 
     const callId = incomingCall.id;
+    endNativeCall(callId).catch(() => {});
     setIncomingCall(null);
     webrtcManager.cleanup();
 
@@ -1179,6 +1335,23 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } else {
         await setDoc(doc(db, 'chat_messages', newMessage.id), cleanForFirestore(newMessage));
       }
+
+      // Dispatch Web Push notification to recipient(s)
+      const recipientIds = recipient
+        ? [recipient.recipientId]
+        : members.filter((m) => m.id !== myId).map((m) => m.id);
+
+      if (recipientIds.length > 0) {
+        sendFcmChatPushNotification({
+          recipientMemberIds: recipientIds,
+          senderName: myName,
+          senderAvatar: myAvatar,
+          messageText: text.trim(),
+          messageType: 'text',
+          fundId: effectiveFundId,
+          senderId: myId,
+        }).catch(() => {});
+      }
     } catch (err) {
       console.warn('Could not save message to Firestore, queued for sync:', err);
       await queueOfflineMessage(newMessage);
@@ -1230,6 +1403,22 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       } else {
         await setDoc(doc(db, 'chat_messages', newMessage.id), cleanForFirestore(newMessage));
       }
+
+      const recipientIds = recipient
+        ? [recipient.recipientId]
+        : members.filter((m) => m.id !== myId).map((m) => m.id);
+
+      if (recipientIds.length > 0) {
+        sendFcmChatPushNotification({
+          recipientMemberIds: recipientIds,
+          senderName: myName,
+          senderAvatar: myAvatar,
+          messageText: `🎤 ভয়েস বার্তা (${durationSeconds}s)`,
+          messageType: 'voice',
+          fundId: effectiveFundId,
+          senderId: myId,
+        }).catch(() => {});
+      }
     } catch (err) {
       console.warn('Could not save voice note to Firestore, queued for sync:', err);
       await queueOfflineMessage(newMessage);
@@ -1279,6 +1468,22 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await queueOfflineMessage(newMessage);
       } else {
         await setDoc(doc(db, 'chat_messages', newMessage.id), cleanForFirestore(newMessage));
+      }
+
+      const recipientIds = recipient
+        ? [recipient.recipientId]
+        : members.filter((m) => m.id !== myId).map((m) => m.id);
+
+      if (recipientIds.length > 0) {
+        sendFcmChatPushNotification({
+          recipientMemberIds: recipientIds,
+          senderName: myName,
+          senderAvatar: myAvatar,
+          messageText: caption || '📷 ছবি পাঠিয়েছেন',
+          messageType: 'image',
+          fundId: effectiveFundId,
+          senderId: myId,
+        }).catch(() => {});
       }
     } catch (err) {
       console.warn('Could not save image message to Firestore, queued for sync:', err);

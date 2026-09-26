@@ -156,6 +156,19 @@ export const CallModal: React.FC = () => {
     };
   }, [remoteStream]);
 
+  // Adjust volume based on speakerphone toggle
+  useEffect(() => {
+    if (remoteAudioRef.current) {
+      remoteAudioRef.current.volume = activeCall?.isSpeakerOn ? 1.0 : 0.4;
+    }
+  }, [activeCall?.isSpeakerOn]);
+
+  const handleContainerClick = () => {
+    if (remoteAudioRef.current && remoteAudioRef.current.paused) {
+      remoteAudioRef.current.play().catch(() => {});
+    }
+  };
+
   if (!activeCall) return null;
 
   const isConnected = activeCall.status === 'connected';
@@ -167,7 +180,10 @@ export const CallModal: React.FC = () => {
   const isRemoteVideoActive = hasRemoteVideo && isConnected;
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex flex-col justify-between text-white p-4 sm:p-6 select-none animate-fadeIn">
+    <div 
+      onClick={handleContainerClick}
+      className="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-md flex flex-col justify-between text-white p-4 sm:p-6 select-none animate-fadeIn"
+    >
       {/* Hidden audio tag to ensure remote audio playback */}
       <audio ref={remoteAudioRef} autoPlay playsInline />
 

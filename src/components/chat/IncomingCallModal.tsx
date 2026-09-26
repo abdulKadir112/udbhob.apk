@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { Phone, PhoneOff, Video, Shield, User, Volume2, Sparkles, PhoneCall } from 'lucide-react';
 import { useChat } from '../../context/ChatContext';
 import { soundEffects } from '../../utils/audioFeedback';
+import { safeVibrate } from '../../utils/pushNotification';
 
 export const IncomingCallModal: React.FC = () => {
   const { incomingCall, acceptIncomingCall, rejectIncomingCall } = useChat();
@@ -10,26 +11,22 @@ export const IncomingCallModal: React.FC = () => {
   useEffect(() => {
     if (!incomingCall) {
       if (vibIntervalRef.current) clearInterval(vibIntervalRef.current);
+      safeVibrate(0);
       return;
     }
 
     // Try to unlock and play ringtone immediately
     soundEffects.unlockAudio();
 
-    // Continuous mobile vibration loop like WhatsApp / IMO
-    if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-      try {
-        navigator.vibrate([1000, 400, 1000, 400, 1500, 400, 2000]);
-        vibIntervalRef.current = setInterval(() => {
-          try {
-            navigator.vibrate([1000, 400, 1000, 400, 1500, 400, 2000]);
-          } catch {}
-        }, 7000);
-      } catch {}
-    }
+    // Safe continuous mobile vibration loop like WhatsApp / IMO
+    safeVibrate([1000, 400, 1000, 400, 1500, 400, 2000]);
+    vibIntervalRef.current = setInterval(() => {
+      safeVibrate([1000, 400, 1000, 400, 1500, 400, 2000]);
+    }, 7000);
 
     return () => {
       if (vibIntervalRef.current) clearInterval(vibIntervalRef.current);
+      safeVibrate(0);
     };
   }, [incomingCall?.id]);
 

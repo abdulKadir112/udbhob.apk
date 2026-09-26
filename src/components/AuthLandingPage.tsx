@@ -38,8 +38,6 @@ export const AuthLandingPage: React.FC<AuthLandingPageProps> = ({
   const {
     loginWithCredentials,
     registerAdminWithFund,
-    loginAsDemoAdmin,
-    loginAsDemoMember,
     userSession,
   } = useAuth();
 
