@@ -96,7 +96,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const fundLogo = currentFund?.logoUrl || currentFund?.avatarUrl;
 
   return (
-    <header className="shrink-0 sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/90 shadow-2xs">
+    <header className="shrink-0 sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200/90 shadow-2xs pt-[env(safe-area-inset-top,0px)]">
       <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
         
         {/* ========================================================================= */}

@@ -5,18 +5,19 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.media.AudioAttributes
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 
 object CallNotificationManager {
-    const val CHANNEL_ID = "probashi_call_channel"
+    const val CHANNEL_ID = "probashi_call_channel_v2"
     const val CHANNEL_NAME = "প্রবাসী মুক্ত ফান্ড কল নোটিফিকেশন"
     const val CALL_NOTIFICATION_ID = 9999
 
@@ -24,6 +25,8 @@ object CallNotificationManager {
     const val ACTION_REJECT_CALL = "com.probashimuktofund.app.ACTION_REJECT_CALL"
 
     private var activeRingtone: Ringtone? = null
+    private var vibrator: Vibrator? = null
+    private var wakeLock: PowerManager.WakeLock? = null
 
     fun createNotificationChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -41,7 +44,7 @@ object CallNotificationManager {
                 description = "প্রবাসী মুক্ত ফান্ড এর ইনকামিং অডিও এবং ভিডিও কলের জন্য হাই-প্রায়োরিটি নোটিফিকেশন"
                 enableLights(true)
                 enableVibration(true)
-                vibrationPattern = longArrayOf(0, 1000, 500, 1000, 500, 1500, 500, 2000)
+                vibrationPattern = longArrayOf(0, 1000, 600, 1000, 600, 1200)
                 setSound(soundUri, audioAttributes)
                 lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
                 setBypassDnd(true)
@@ -62,9 +65,14 @@ object CallNotificationManager {
         callerAvatar: String? = null
     ) {
         createNotificationChannel(context)
+
+        // 1. Wake up device CPU and screen immediately from Deep Sleep
+        acquireWakeLock(context)
+
+        // 2. Start physical phone vibration and looping ringtone
         startRinging(context)
 
-        // Fullscreen Intent to open IncomingCallActivity on lockscreen
+        // 3. Fullscreen Intent to open IncomingCallActivity on lockscreen
         val fullScreenIntent = Intent(context, IncomingCallActivity::class.java).apply {
             putExtra("CALL_ID", callId)
             putExtra("CALLER_NAME", callerName)
@@ -72,7 +80,12 @@ object CallNotificationManager {
             putExtra("CALLER_COUNTRY", callerCountry)
             putExtra("CALL_TYPE", callType)
             putExtra("CALLER_AVATAR", callerAvatar)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+            )
         }
         val fullScreenPendingIntent = PendingIntent.getActivity(
             context,
@@ -127,17 +140,74 @@ object CallNotificationManager {
 
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(CALL_NOTIFICATION_ID, notificationBuilder.build())
+
+        // Also launch activity directly to wake screen up like WhatsApp/IMO
+        try {
+            context.startActivity(fullScreenIntent)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun acquireWakeLock(context: Context) {
+        try {
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (wakeLock == null || !wakeLock!!.isHeld) {
+                @Suppress("DEPRECATION")
+                wakeLock = powerManager.newWakeLock(
+                    PowerManager.FULL_WAKE_LOCK or
+                    PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                    PowerManager.ON_AFTER_RELEASE,
+                    "probashi:incoming_call_wakelock"
+                )
+                wakeLock?.acquire(45000) // Keep awake for up to 45 seconds while ringing
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    fun releaseWakeLock() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                }
+            }
+            wakeLock = null
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     fun startRinging(context: Context) {
         try {
             stopRinging()
+
+            // 1. Looping Ringtone
             val alertUri: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
             activeRingtone = RingtoneManager.getRingtone(context.applicationContext, alertUri)?.apply {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     isLooping = true
                 }
                 play()
+            }
+
+            // 2. Repeated Vibration Pattern
+            vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vibratorManager.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+
+            val pattern = longArrayOf(0, 1000, 600, 1000, 600, 1200)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator?.vibrate(VibrationEffect.createWaveform(pattern, 0))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator?.vibrate(pattern, 0)
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -155,6 +225,15 @@ object CallNotificationManager {
         } catch (e: Exception) {
             e.printStackTrace()
         }
+
+        try {
+            vibrator?.cancel()
+            vibrator = null
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        releaseWakeLock()
     }
 
     fun dismissCall(context: Context) {

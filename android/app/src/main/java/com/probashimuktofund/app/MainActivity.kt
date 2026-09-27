@@ -1,28 +1,139 @@
 package com.probashimuktofund.app
 
+import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
+import android.view.View
 import android.webkit.PermissionRequest
-import android.webkit.WebChromeClient
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.getcapacitor.BridgeActivity
+import com.getcapacitor.BridgeWebChromeClient
 
 class MainActivity : BridgeActivity() {
+
+    private val PERMISSIONS_REQUEST_CODE = 9999
+    private var pendingPermissionRequest: PermissionRequest? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         registerPlugin(NativeCallPlugin::class.java)
         super.onCreate(savedInstanceState)
 
-        // Initialize Call Notification Channel
+        // 1. Status Bar Styling: Match WhatsApp Emerald theme (#005c4b) with crisp white status icons
+        window.statusBarColor = android.graphics.Color.parseColor("#005c4b")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val decorView = window.decorView
+            decorView.systemUiVisibility = decorView.systemUiVisibility and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+        }
+
+        // 2. Safe Area Insets: Ensure the app content leaves room for the mobile status bar / notch
+        ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { view, insets ->
+            val statusBarInsets = insets.getInsets(WindowInsetsCompat.Type.statusBars())
+            view.setPadding(0, statusBarInsets.top, 0, 0)
+            insets
+        }
+
+        // 3. Initialize Call Notification Channel
         CallNotificationManager.createNotificationChannel(this)
 
-        // Allow WebRTC Camera & Microphone without permission blockages in WebView
-        bridge?.webView?.webChromeClient = object : WebChromeClient() {
+        // 4. Request Audio, Camera, and Notification permissions at launch
+        checkAndRequestAppPermissions()
+
+        // 5. Request Battery Optimization Exemption for 24/7 Deep Sleep Calling like WhatsApp/IMO
+        requestBatteryOptimizationExemption()
+
+        // 6. Seamless WebRTC Camera & Microphone permission handler
+        bridge?.webView?.webChromeClient = object : BridgeWebChromeClient(bridge) {
             override fun onPermissionRequest(request: PermissionRequest?) {
-                request?.grant(request.resources)
+                if (request == null) return
+
+                val hasAudio = ContextCompat.checkSelfPermission(
+                    this@MainActivity,
+                    android.Manifest.permission.RECORD_AUDIO
+                ) == PackageManager.PERMISSION_GRANTED
+
+                val hasCamera = ContextCompat.checkSelfPermission(
+                    this@MainActivity,
+                    android.Manifest.permission.CAMERA
+                ) == PackageManager.PERMISSION_GRANTED
+
+                if (hasAudio && hasCamera) {
+                    runOnUiThread {
+                        request.grant(request.resources)
+                    }
+                } else {
+                    pendingPermissionRequest = request
+                    val needed = mutableListOf<String>()
+                    if (!hasAudio) needed.add(android.Manifest.permission.RECORD_AUDIO)
+                    if (!hasCamera) needed.add(android.Manifest.permission.CAMERA)
+                    ActivityCompat.requestPermissions(
+                        this@MainActivity,
+                        needed.toTypedArray(),
+                        PERMISSIONS_REQUEST_CODE
+                    )
+                }
             }
         }
 
         handleCallIntent(intent)
+    }
+
+    private fun checkAndRequestAppPermissions() {
+        val permissions = mutableListOf(
+            android.Manifest.permission.RECORD_AUDIO,
+            android.Manifest.permission.CAMERA,
+            android.Manifest.permission.MODIFY_AUDIO_SETTINGS
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+
+        val needed = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (needed.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMISSION_REQUEST_CODE)
+        }
+    }
+
+    private fun requestBatteryOptimizationExemption() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == PERMISSIONS_REQUEST_CODE) {
+            pendingPermissionRequest?.let { req ->
+                runOnUiThread {
+                    req.grant(req.resources)
+                }
+                pendingPermissionRequest = null
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

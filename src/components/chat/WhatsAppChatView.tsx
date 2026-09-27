@@ -196,7 +196,9 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
 
     if (
       typeof window !== 'undefined' &&
-      (window.matchMedia('(display-mode: standalone)').matches || (window.navigator as any).standalone)
+      (window.matchMedia('(display-mode: standalone)').matches ||
+        (window.navigator as any).standalone ||
+        (window as any).Capacitor?.isNativePlatform?.())
     ) {
       setIsAppInstalled(true);
     }
@@ -682,7 +684,7 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
   return (
     <div className="flex flex-col h-full w-full max-w-5xl mx-auto bg-[#efeae2] shadow-xl overflow-hidden relative border-x border-slate-200">
       {/* 1. TOP HEADER (WHATSAPP COMMUNITY BRANDING) */}
-      <div className="bg-[#005c4b] text-white px-3 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between shadow-md z-30 shrink-0 select-none">
+      <div className="bg-[#005c4b] text-white px-2.5 sm:px-4 py-2 sm:py-2.5 pt-[max(env(safe-area-inset-top),0.5rem)] flex items-center justify-between shadow-md z-30 shrink-0 select-none gap-1 sm:gap-2">
         {/* Left: Group/Direct User Avatar & Info */}
         <div
           onClick={() => setIsMembersDrawerOpen(true)}
@@ -801,31 +803,27 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
             <Search className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
 
-          {/* Install App Button (PWA 1-Click Install to Phone Home Screen) */}
-          <button
-            id="btn-install-pwa-header"
-            onClick={handleInstallApp}
-            className={`flex items-center space-x-1 px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-full font-bold text-[10.5px] sm:text-xs shadow-xs transition-all cursor-pointer shrink-0 ${
-              isAppInstalled
-                ? 'bg-emerald-800/90 text-emerald-200 hover:bg-emerald-700'
-                : 'bg-emerald-400 hover:bg-emerald-300 text-emerald-950 animate-pulse ring-1 ring-white/50'
-            }`}
-            title={isBn ? 'ফোনের হোম স্ক্রিনে অ্যাপ ইনস্টল করুন' : 'Install PWA App to Home Screen'}
-          >
-            <Smartphone className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
-            <span className="hidden xs:inline">
-              {isAppInstalled ? (isBn ? 'ইনস্টলড ✓' : 'Installed ✓') : (isBn ? 'ইনস্টল অ্যাপ' : 'Install App')}
-            </span>
-          </button>
+          {/* Install App Button (PWA 1-Click Install to Phone Home Screen - hidden inside native app or if installed) */}
+          {!isAppInstalled && (
+            <button
+              id="btn-install-pwa-header"
+              onClick={handleInstallApp}
+              className="hidden xs:flex items-center space-x-1 px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-full font-bold text-[10px] sm:text-xs shadow-xs transition-all cursor-pointer shrink-0 bg-emerald-400 hover:bg-emerald-300 text-emerald-950 animate-pulse ring-1 ring-white/50"
+              title={isBn ? 'ফোনের হোম স্ক্রিনে অ্যাপ ইনস্টল করুন' : 'Install PWA App to Home Screen'}
+            >
+              <Smartphone className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
+              <span>{isBn ? 'ইনস্টল' : 'Install'}</span>
+            </button>
+          )}
 
           {/* Switch to Fund Tab Button */}
           {onNavigateToFund && (
             <button
               onClick={onNavigateToFund}
-              className="flex items-center space-x-1 px-2 sm:px-3 py-1 sm:py-1.5 rounded-full bg-amber-400 hover:bg-amber-300 text-amber-950 font-bold text-[10.5px] sm:text-xs shadow-xs transition-all cursor-pointer shrink-0"
+              className="flex items-center space-x-1 px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-full bg-amber-400 hover:bg-amber-300 text-amber-950 font-bold text-[11px] sm:text-xs shadow-xs transition-all cursor-pointer shrink-0 whitespace-nowrap"
               title="ফান্ড ড্যাশবোর্ড, সঞ্চয় চার্ট ও বিনিয়োগ দেখুন"
             >
-              <Coins className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-amber-900" />
+              <Coins className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-amber-900 shrink-0" />
               <span>{isBn ? 'আপনার ফান্ড' : 'Your Fund'}</span>
             </button>
           )}

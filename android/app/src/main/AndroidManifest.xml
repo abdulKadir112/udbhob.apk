@@ -13,6 +13,8 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.DISABLE_KEYGUARD" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
@@ -45,15 +47,17 @@
 
         </activity>
 
-        <!-- Fullscreen Lockscreen Incoming Call Activity -->
+        <!-- Fullscreen Lockscreen Incoming Call Activity (WhatsApp/IMO style) -->
         <activity
             android:name=".IncomingCallActivity"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleInstance"
+            android:screenOrientation="portrait"
             android:showWhenLocked="true"
             android:turnScreenOn="true"
             android:showForAllUsers="true"
             android:excludeFromRecents="true"
+            android:taskAffinity="com.probashimuktofund.app.incomingcall"
             android:theme="@style/Theme.AppCompat.NoActionBar" />
 
         <!-- Notification Action Broadcast Receiver -->
