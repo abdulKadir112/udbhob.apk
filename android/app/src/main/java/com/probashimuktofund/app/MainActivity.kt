@@ -9,18 +9,15 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
-import android.webkit.PermissionRequest
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.getcapacitor.BridgeActivity
-import com.getcapacitor.BridgeWebChromeClient
 
 class MainActivity : BridgeActivity() {
 
     private val PERMISSIONS_REQUEST_CODE = 9999
-    private var pendingPermissionRequest: PermissionRequest? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         registerPlugin(NativeCallPlugin::class.java)
@@ -49,39 +46,6 @@ class MainActivity : BridgeActivity() {
         // 5. Request Battery Optimization Exemption for 24/7 Deep Sleep Calling like WhatsApp/IMO
         requestBatteryOptimizationExemption()
 
-        // 6. Seamless WebRTC Camera & Microphone permission handler
-        bridge?.webView?.webChromeClient = object : BridgeWebChromeClient(bridge) {
-            override fun onPermissionRequest(request: PermissionRequest?) {
-                if (request == null) return
-
-                val hasAudio = ContextCompat.checkSelfPermission(
-                    this@MainActivity,
-                    android.Manifest.permission.RECORD_AUDIO
-                ) == PackageManager.PERMISSION_GRANTED
-
-                val hasCamera = ContextCompat.checkSelfPermission(
-                    this@MainActivity,
-                    android.Manifest.permission.CAMERA
-                ) == PackageManager.PERMISSION_GRANTED
-
-                if (hasAudio && hasCamera) {
-                    runOnUiThread {
-                        request.grant(request.resources)
-                    }
-                } else {
-                    pendingPermissionRequest = request
-                    val needed = mutableListOf<String>()
-                    if (!hasAudio) needed.add(android.Manifest.permission.RECORD_AUDIO)
-                    if (!hasCamera) needed.add(android.Manifest.permission.CAMERA)
-                    ActivityCompat.requestPermissions(
-                        this@MainActivity,
-                        needed.toTypedArray(),
-                        PERMISSIONS_REQUEST_CODE
-                    )
-                }
-            }
-        }
-
         handleCallIntent(intent)
     }
 
@@ -100,7 +64,7 @@ class MainActivity : BridgeActivity() {
         }
 
         if (needed.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMISSION_REQUEST_CODE)
+            ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMISSIONS_REQUEST_CODE)
         }
     }
 
@@ -116,22 +80,6 @@ class MainActivity : BridgeActivity() {
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-            }
-        }
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == PERMISSIONS_REQUEST_CODE) {
-            pendingPermissionRequest?.let { req ->
-                runOnUiThread {
-                    req.grant(req.resources)
-                }
-                pendingPermissionRequest = null
             }
         }
     }

@@ -46,7 +46,7 @@ object CallNotificationManager {
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 1000, 600, 1000, 600, 1200)
                 setSound(soundUri, audioAttributes)
-                lockscreenVisibility = NotificationCompat.VISIBILITY_PUBLIC
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
                 setBypassDnd(true)
             }
 
