@@ -4,6 +4,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.View
 import android.webkit.PermissionRequest
 import androidx.core.app.ActivityCompat
@@ -16,35 +17,65 @@ import com.getcapacitor.JSObject
 class MainActivity : BridgeActivity() {
 
     private val PERMISSIONS_REQUEST_CODE = 9999
+    private val TAG = "MainActivity"
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        registerPlugin(NativeCallPlugin::class.java)
-        super.onCreate(savedInstanceState)
-
-        // 1. Status Bar Styling: Match WhatsApp Emerald theme (#005c4b) with crisp white status icons
-        WindowCompat.setDecorFitsSystemWindows(window, true)
-        window.statusBarColor = android.graphics.Color.parseColor("#005c4b")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val decorView = window.decorView
-            decorView.systemUiVisibility = decorView.systemUiVisibility and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+        try {
+            registerPlugin(NativeCallPlugin::class.java)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register NativeCallPlugin", e)
         }
 
-        // 2. Initialize Call & Notification Channels
-        CallNotificationManager.createNotificationChannel(this)
+        super.onCreate(savedInstanceState)
 
-        // 3. Request Audio, Camera, and Notification runtime permissions at first launch
-        checkAndRequestAppPermissions()
+        try {
+            // 1. Status Bar Styling: Match WhatsApp Emerald theme (#005c4b) with crisp white status icons
+            WindowCompat.setDecorFitsSystemWindows(window, true)
+            window.statusBarColor = android.graphics.Color.parseColor("#005c4b")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val decorView = window.decorView
+                decorView.systemUiVisibility = decorView.systemUiVisibility and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Status bar config warning", e)
+        }
 
-        // 4. Configure WebView for WebRTC media streams & autoplay
-        setupWebViewForMedia()
+        try {
+            // 2. Initialize Call & Notification Channels
+            CallNotificationManager.createNotificationChannel(this)
+        } catch (e: Exception) {
+            Log.e(TAG, "Notification channel init error", e)
+        }
 
-        // 5. Handle any incoming call intents
-        handleCallIntent(intent)
+        try {
+            // 3. Request Audio, Camera, and Notification runtime permissions
+            checkAndRequestAppPermissions()
+        } catch (e: Exception) {
+            Log.e(TAG, "Permission check error", e)
+        }
+
+        try {
+            // 4. Configure WebView for WebRTC media streams & autoplay
+            setupWebViewForMedia()
+        } catch (e: Exception) {
+            Log.e(TAG, "WebView setup error", e)
+        }
+
+        try {
+            // 5. Handle any incoming call intents
+            handleCallIntent(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Handle call intent error", e)
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        setupWebViewForMedia()
+        try {
+            setupWebViewForMedia()
+        } catch (e: Exception) {
+            Log.w(TAG, "onResume setup error", e)
+        }
     }
 
     private fun setupWebViewForMedia() {
@@ -56,14 +87,18 @@ class MainActivity : BridgeActivity() {
                 databaseEnabled = true
             }
 
-            // Ensure WebRTC microphone and camera requests inside the WebView are granted without friction
+            // Ensure WebRTC microphone and camera requests inside the WebView are granted safely
             webView.webChromeClient = object : BridgeWebChromeClient(bridge) {
                 override fun onPermissionRequest(request: PermissionRequest) {
                     runOnUiThread {
                         try {
                             request.grant(request.resources)
                         } catch (e: Exception) {
-                            super.onPermissionRequest(request)
+                            try {
+                                super.onPermissionRequest(request)
+                            } catch (superEx: Exception) {
+                                Log.w(TAG, "Permission request delegation error", superEx)
+                            }
                         }
                     }
                 }
@@ -92,7 +127,11 @@ class MainActivity : BridgeActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleCallIntent(intent)
+        try {
+            handleCallIntent(intent)
+        } catch (e: Exception) {
+            Log.e(TAG, "onNewIntent call handle error", e)
+        }
     }
 
     private fun handleCallIntent(intent: Intent?) {
@@ -107,7 +146,6 @@ class MainActivity : BridgeActivity() {
                 NativeCallPlugin.pendingCall = callData
                 NativeCallPlugin.instance?.notifyCallAnswered(acceptCallId, callType)
 
-                // Dispatch custom event in web view with multiple attempts in case React is still mounting
                 val jsScript = """
                     (function() {
                         var event = new CustomEvent('native_accept_call', {

@@ -57,7 +57,7 @@
             android:showForAllUsers="true"
             android:excludeFromRecents="true"
             android:taskAffinity="com.probashimuktofund.app.incomingcall"
-            android:theme="@style/Theme.AppCompat.NoActionBar" />
+            android:theme="@style/IncomingCallTheme" />
 
         <!-- Notification Action Broadcast Receiver -->
         <receiver
