@@ -19,6 +19,8 @@ import androidx.core.app.NotificationCompat
 object CallNotificationManager {
     const val CHANNEL_ID = "probashi_call_channel_v2"
     const val CHANNEL_NAME = "প্রবাসী মুক্ত ফান্ড কল নোটিফিকেশন"
+    const val GENERAL_CHANNEL_ID = "probashi_general_channel_v2"
+    const val GENERAL_CHANNEL_NAME = "প্রবাসী বার্তা ও নোটিফিকেশন"
     const val CALL_NOTIFICATION_ID = 9999
 
     const val ACTION_ACCEPT_CALL = "com.probashimuktofund.app.ACTION_ACCEPT_CALL"
@@ -30,13 +32,16 @@ object CallNotificationManager {
 
     fun createNotificationChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val soundUri: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-            val audioAttributes = AudioAttributes.Builder()
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+            // 1. High-Priority Call Notification Channel (Ringtone + Looping Vibration + Fullscreen Intent)
+            val ringtoneUri: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+            val callAudioAttributes = AudioAttributes.Builder()
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
                 .build()
 
-            val channel = NotificationChannel(
+            val callChannel = NotificationChannel(
                 CHANNEL_ID,
                 CHANNEL_NAME,
                 NotificationManager.IMPORTANCE_HIGH
@@ -45,13 +50,32 @@ object CallNotificationManager {
                 enableLights(true)
                 enableVibration(true)
                 vibrationPattern = longArrayOf(0, 1000, 600, 1000, 600, 1200)
-                setSound(soundUri, audioAttributes)
+                setSound(ringtoneUri, callAudioAttributes)
                 lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
                 setBypassDnd(true)
             }
+            manager.createNotificationChannel(callChannel)
 
-            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.createNotificationChannel(channel)
+            // 2. High-Priority General Messaging & Announcement Notification Channel
+            val notifSoundUri: Uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            val generalAudioAttributes = AudioAttributes.Builder()
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT)
+                .build()
+
+            val generalChannel = NotificationChannel(
+                GENERAL_CHANNEL_ID,
+                GENERAL_CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "প্রবাসী মুক্ত ফান্ড এর চ্যাট বার্তা ও ফান্ড নোটিফিকেশন"
+                enableLights(true)
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 250, 150, 250)
+                setSound(notifSoundUri, generalAudioAttributes)
+                lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+            }
+            manager.createNotificationChannel(generalChannel)
         }
     }
 

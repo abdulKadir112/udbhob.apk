@@ -12,6 +12,17 @@ const PORT = 3000;
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Enable CORS for Native Capacitor Android APK (capacitor://localhost, https://localhost) and Web
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // Lazy Firebase Admin Initialization
 let adminAppInstance: App | null = null;
 
@@ -105,47 +116,55 @@ app.post('/api/send-fcm-notification', async (req, res) => {
 
     const messaging = getMessaging(adminApp);
     const notificationTitle = title || (isCall ? `📞 ${callerName || 'সদস্য'} থেকে কল আসছে` : 'প্রবাসী মুক্ত ফান্ড');
-    const notificationBody = body || (isCall ? 'ফোন লক থাকলেও রিসিভ বা কেটে দিতে ট্যাপ করুন' : 'নতুন বার্তা এসেছে');
+    const notificationBody = body || (isCall ? 'প্রবাসী মুক্ত ফান্ড কল আসছে। রিসিভ বা কেটে দিতে ট্যাপ করুন' : 'নতুন বার্তা এসেছে');
     const notificationIcon = icon || '/udbhob_logo.svg';
     const targetUrl = url || (isCall ? `/?callAction=answer&callId=${callId || 'live'}` : '/');
 
-    const topLevelNotification: { title: string; body: string; imageUrl?: string } = {
+    // Build comprehensive data payload with both camelCase and snake_case keys
+    const enrichedData = {
+      type: isCall ? 'incoming_call' : 'notification',
+      action: isCall ? 'incoming_call' : 'message',
+      isCall: isCall ? 'true' : 'false',
+      callId: String(callId || ''),
+      call_id: String(callId || ''),
+      callerName: String(callerName || 'প্রবাসী সদস্য'),
+      caller_name: String(callerName || 'প্রবাসী সদস্য'),
+      callerRole: String(data.callerRole || data.caller_role || 'member'),
+      caller_role: String(data.callerRole || data.caller_role || 'member'),
+      callerCountry: String(data.callerCountry || data.caller_country || 'প্রবাসী'),
+      caller_country: String(data.callerCountry || data.caller_country || 'প্রবাসী'),
+      callType: String(callType || 'audio'),
+      call_type: String(callType || 'audio'),
+      callerAvatar: String(notificationIcon),
+      caller_avatar: String(notificationIcon),
       title: notificationTitle,
       body: notificationBody,
+      timestamp: String(Date.now()),
+      url: targetUrl,
+      ...Object.fromEntries(
+        Object.entries(data).map(([k, v]) => [k, String(v)])
+      ),
     };
-    if (typeof notificationIcon === 'string' && (notificationIcon.startsWith('http://') || notificationIcon.startsWith('https://'))) {
-      topLevelNotification.imageUrl = notificationIcon;
-    }
 
-    const commonPayload = {
-      notification: topLevelNotification,
-      data: {
-        url: targetUrl,
-        isCall: isCall ? 'true' : 'false',
-        callId: String(callId || ''),
-        callerName: String(callerName || ''),
-        callType: String(callType || 'audio'),
-        timestamp: String(Date.now()),
-        action: isCall ? 'incoming_call' : 'message',
-        ...Object.fromEntries(
-          Object.entries(data).map(([k, v]) => [k, String(v)])
-        ),
-      },
+    const commonPayload: any = {
+      data: enrichedData,
       android: {
         priority: 'high' as const,
         ttl: isCall ? 60 * 1000 : 86400 * 1000,
-        notification: {
-          title: notificationTitle,
-          body: notificationBody,
-          icon: 'udbhob_logo',
-          color: '#10B981',
-          sound: 'default',
-          priority: 'max' as const,
-          visibility: 'public' as const,
-          channelId: 'calls_channel',
-          defaultVibrateTimings: !isCall,
-          vibrateTimingsMillis: isCall ? [0, 1000, 400, 1000, 400, 1200, 400, 1500, 400, 2000] : undefined,
-        },
+        // For general messages/announcements only: show system tray notification
+        ...(!isCall && {
+          notification: {
+            title: notificationTitle,
+            body: notificationBody,
+            icon: 'ic_launcher',
+            color: '#005C4B',
+            sound: 'default',
+            priority: 'high' as const,
+            visibility: 'public' as const,
+            channelId: 'probashi_general_channel_v2',
+            defaultVibrateTimings: true,
+          },
+        }),
       },
       webpush: {
         headers: {
@@ -173,12 +192,24 @@ app.post('/api/send-fcm-notification', async (req, res) => {
                 { action: 'open', title: '👀 দেখুন' },
                 { action: 'close', title: '❌ বন্ধ' },
               ],
+          data: enrichedData,
         },
         fcmOptions: {
           link: targetUrl,
         },
       },
     };
+
+    // Include top-level notification for non-call messages for universal compatibility
+    if (!isCall) {
+      commonPayload.notification = {
+        title: notificationTitle,
+        body: notificationBody,
+      };
+      if (typeof notificationIcon === 'string' && (notificationIcon.startsWith('http://') || notificationIcon.startsWith('https://'))) {
+        commonPayload.notification.imageUrl = notificationIcon;
+      }
+    }
 
     const results = await Promise.allSettled(
       recipientTokens.map((t) =>

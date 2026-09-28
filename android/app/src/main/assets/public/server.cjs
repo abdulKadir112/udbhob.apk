@@ -32,6 +32,15 @@ var app = (0, import_express.default)();
 var PORT = 3e3;
 app.use(import_express.default.json({ limit: "10mb" }));
 app.use(import_express.default.urlencoded({ extended: true, limit: "10mb" }));
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+  next();
+});
 var adminAppInstance = null;
 function getFirebaseAdminApp() {
   try {
@@ -112,44 +121,51 @@ app.post("/api/send-fcm-notification", async (req, res) => {
     }
     const messaging = (0, import_messaging.getMessaging)(adminApp);
     const notificationTitle = title || (isCall ? `\u{1F4DE} ${callerName || "\u09B8\u09A6\u09B8\u09CD\u09AF"} \u09A5\u09C7\u0995\u09C7 \u0995\u09B2 \u0986\u09B8\u099B\u09C7` : "\u09AA\u09CD\u09B0\u09AC\u09BE\u09B8\u09C0 \u09AE\u09C1\u0995\u09CD\u09A4 \u09AB\u09BE\u09A8\u09CD\u09A1");
-    const notificationBody = body || (isCall ? "\u09AB\u09CB\u09A8 \u09B2\u0995 \u09A5\u09BE\u0995\u09B2\u09C7\u0993 \u09B0\u09BF\u09B8\u09BF\u09AD \u09AC\u09BE \u0995\u09C7\u099F\u09C7 \u09A6\u09BF\u09A4\u09C7 \u099F\u09CD\u09AF\u09BE\u09AA \u0995\u09B0\u09C1\u09A8" : "\u09A8\u09A4\u09C1\u09A8 \u09AC\u09BE\u09B0\u09CD\u09A4\u09BE \u098F\u09B8\u09C7\u099B\u09C7");
+    const notificationBody = body || (isCall ? "\u09AA\u09CD\u09B0\u09AC\u09BE\u09B8\u09C0 \u09AE\u09C1\u0995\u09CD\u09A4 \u09AB\u09BE\u09A8\u09CD\u09A1 \u0995\u09B2 \u0986\u09B8\u099B\u09C7\u0964 \u09B0\u09BF\u09B8\u09BF\u09AD \u09AC\u09BE \u0995\u09C7\u099F\u09C7 \u09A6\u09BF\u09A4\u09C7 \u099F\u09CD\u09AF\u09BE\u09AA \u0995\u09B0\u09C1\u09A8" : "\u09A8\u09A4\u09C1\u09A8 \u09AC\u09BE\u09B0\u09CD\u09A4\u09BE \u098F\u09B8\u09C7\u099B\u09C7");
     const notificationIcon = icon || "/udbhob_logo.svg";
     const targetUrl = url || (isCall ? `/?callAction=answer&callId=${callId || "live"}` : "/");
-    const topLevelNotification = {
+    const enrichedData = {
+      type: isCall ? "incoming_call" : "notification",
+      action: isCall ? "incoming_call" : "message",
+      isCall: isCall ? "true" : "false",
+      callId: String(callId || ""),
+      call_id: String(callId || ""),
+      callerName: String(callerName || "\u09AA\u09CD\u09B0\u09AC\u09BE\u09B8\u09C0 \u09B8\u09A6\u09B8\u09CD\u09AF"),
+      caller_name: String(callerName || "\u09AA\u09CD\u09B0\u09AC\u09BE\u09B8\u09C0 \u09B8\u09A6\u09B8\u09CD\u09AF"),
+      callerRole: String(data.callerRole || data.caller_role || "member"),
+      caller_role: String(data.callerRole || data.caller_role || "member"),
+      callerCountry: String(data.callerCountry || data.caller_country || "\u09AA\u09CD\u09B0\u09AC\u09BE\u09B8\u09C0"),
+      caller_country: String(data.callerCountry || data.caller_country || "\u09AA\u09CD\u09B0\u09AC\u09BE\u09B8\u09C0"),
+      callType: String(callType || "audio"),
+      call_type: String(callType || "audio"),
+      callerAvatar: String(notificationIcon),
+      caller_avatar: String(notificationIcon),
       title: notificationTitle,
-      body: notificationBody
+      body: notificationBody,
+      timestamp: String(Date.now()),
+      url: targetUrl,
+      ...Object.fromEntries(
+        Object.entries(data).map(([k, v]) => [k, String(v)])
+      )
     };
-    if (typeof notificationIcon === "string" && (notificationIcon.startsWith("http://") || notificationIcon.startsWith("https://"))) {
-      topLevelNotification.imageUrl = notificationIcon;
-    }
     const commonPayload = {
-      notification: topLevelNotification,
-      data: {
-        url: targetUrl,
-        isCall: isCall ? "true" : "false",
-        callId: String(callId || ""),
-        callerName: String(callerName || ""),
-        callType: String(callType || "audio"),
-        timestamp: String(Date.now()),
-        action: isCall ? "incoming_call" : "message",
-        ...Object.fromEntries(
-          Object.entries(data).map(([k, v]) => [k, String(v)])
-        )
-      },
+      data: enrichedData,
       android: {
         priority: "high",
         ttl: isCall ? 60 * 1e3 : 86400 * 1e3,
-        notification: {
-          title: notificationTitle,
-          body: notificationBody,
-          icon: "udbhob_logo",
-          color: "#10B981",
-          sound: "default",
-          priority: "max",
-          visibility: "public",
-          channelId: "calls_channel",
-          defaultVibrateTimings: !isCall,
-          vibrateTimingsMillis: isCall ? [0, 1e3, 400, 1e3, 400, 1200, 400, 1500, 400, 2e3] : void 0
+        // For general messages/announcements only: show system tray notification
+        ...!isCall && {
+          notification: {
+            title: notificationTitle,
+            body: notificationBody,
+            icon: "ic_launcher",
+            color: "#005C4B",
+            sound: "default",
+            priority: "high",
+            visibility: "public",
+            channelId: "probashi_general_channel_v2",
+            defaultVibrateTimings: true
+          }
         }
       },
       webpush: {
@@ -173,13 +189,23 @@ app.post("/api/send-fcm-notification", async (req, res) => {
           ] : [
             { action: "open", title: "\u{1F440} \u09A6\u09C7\u0996\u09C1\u09A8" },
             { action: "close", title: "\u274C \u09AC\u09A8\u09CD\u09A7" }
-          ]
+          ],
+          data: enrichedData
         },
         fcmOptions: {
           link: targetUrl
         }
       }
     };
+    if (!isCall) {
+      commonPayload.notification = {
+        title: notificationTitle,
+        body: notificationBody
+      };
+      if (typeof notificationIcon === "string" && (notificationIcon.startsWith("http://") || notificationIcon.startsWith("https://"))) {
+        commonPayload.notification.imageUrl = notificationIcon;
+      }
+    }
     const results = await Promise.allSettled(
       recipientTokens.map(
         (t) => messaging.send({

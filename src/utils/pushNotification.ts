@@ -128,7 +128,16 @@ export function safeVibrate(pattern: number | number[]): boolean {
   }
 }
 
-import { isNativeApp, showNativeIncomingCall, endNativeCall } from './nativeCall';
+import { isNativeApp, showNativeIncomingCall, endNativeCall, getNativeFcmToken } from './nativeCall';
+
+export const BACKEND_URL = 'https://ais-dev-ai6j5tjarzfgcgpi4u663i-956237498753.asia-southeast1.run.app';
+
+export function getApiEndpoint(path: string): string {
+  if (isNativeApp()) {
+    return `${BACKEND_URL}${path}`;
+  }
+  return path;
+}
 
 /**
  * Trigger Lock-Screen Incoming Call Notification (IMO / WhatsApp style)
@@ -682,10 +691,54 @@ export async function scheduleLockScreenNotificationTest(delayMs: number = 3000,
 let messagingInstance: any = null;
 
 /**
- * Register FCM Token for Web Push with the configured VAPID key
+ * Sync FCM Token with Firestore profile
+ */
+export async function syncFcmTokenToFirestore(currentToken: string, memberId?: string, fundId?: string): Promise<void> {
+  const effectiveFundId = fundId || localStorage.getItem('probashi_active_fund_id') || 'fund-main';
+  const effectiveMemberId = memberId || localStorage.getItem('probashi_active_member_id');
+
+  if (effectiveMemberId && db) {
+    try {
+      const memberRef = doc(db, 'funds', effectiveFundId, 'members', effectiveMemberId);
+      await updateDoc(memberRef, {
+        fcmToken: currentToken,
+        fcmTokenUpdatedAt: new Date().toISOString(),
+      }).catch(async () => {
+        const userRef = doc(db, 'users', effectiveMemberId);
+        await setDoc(
+          userRef,
+          { fcmToken: currentToken, updatedAt: new Date().toISOString() },
+          { merge: true }
+        ).catch(() => {});
+      });
+      console.log('✅ FCM Token successfully synced to Firestore for member:', effectiveMemberId);
+    } catch (dbErr) {
+      console.warn('Error saving FCM token to Firestore:', dbErr);
+    }
+  }
+}
+
+/**
+ * Register FCM Token for Web Push with the configured VAPID key (or native Android token on APK)
  * and save it to the current user's Firestore profile
  */
 export async function getOrRegisterFcmToken(memberId?: string, fundId?: string): Promise<string | null> {
+  // 1. If running inside Native Android APK, fetch native device token via Google Play Services!
+  if (isNativeApp()) {
+    try {
+      const nativeToken = await getNativeFcmToken();
+      if (nativeToken) {
+        console.log('📱 Native Android FCM Token acquired:', nativeToken);
+        localStorage.setItem('probashi_fcm_token', nativeToken);
+        await syncFcmTokenToFirestore(nativeToken, memberId, fundId);
+        return nativeToken;
+      }
+    } catch (nativeErr) {
+      console.warn('Native FCM token retrieval note:', nativeErr);
+    }
+  }
+
+  // 2. Web Push fallback (for desktop / mobile browser)
   if (typeof window === 'undefined' || !('Notification' in window) || !('serviceWorker' in navigator)) {
     return null;
   }
@@ -719,30 +772,7 @@ export async function getOrRegisterFcmToken(memberId?: string, fundId?: string):
     if (currentToken) {
       console.log('🔑 Device FCM Token registered successfully:', currentToken);
       localStorage.setItem('probashi_fcm_token', currentToken);
-
-      // If user session is active, sync with Firestore
-      const effectiveFundId = fundId || localStorage.getItem('probashi_active_fund_id') || 'fund-main';
-      const effectiveMemberId = memberId || localStorage.getItem('probashi_active_member_id');
-
-      if (effectiveMemberId && db) {
-        try {
-          const memberRef = doc(db, 'funds', effectiveFundId, 'members', effectiveMemberId);
-          await updateDoc(memberRef, {
-            fcmToken: currentToken,
-            fcmTokenUpdatedAt: new Date().toISOString(),
-          }).catch(async () => {
-            const userRef = doc(db, 'users', effectiveMemberId);
-            await setDoc(
-              userRef,
-              { fcmToken: currentToken, updatedAt: new Date().toISOString() },
-              { merge: true }
-            ).catch(() => {});
-          });
-        } catch (dbErr) {
-          console.warn('Error saving FCM token to Firestore:', dbErr);
-        }
-      }
-
+      await syncFcmTokenToFirestore(currentToken, memberId, fundId);
       return currentToken;
     }
     return null;
@@ -853,7 +883,7 @@ export async function sendFcmCallPushNotification(params: {
       ? 'প্রবাসী মুক্ত ফান্ড গ্রুপ কল আসছে... রিসিভ করতে ট্যাপ করুন।'
       : 'সরাসরি কল বাজছে। ফোন আনলক না করেই রিসিভ বা কেটে দিন।';
 
-    const response = await fetch('/api/send-fcm-notification', {
+    const response = await fetch(getApiEndpoint('/api/send-fcm-notification'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -874,6 +904,7 @@ export async function sendFcmCallPushNotification(params: {
           callerName,
           callType,
           isCall: 'true',
+          callerAvatar: callerAvatar || '',
           url: `/?callAction=answer&callId=${callId}&callerName=${encodeURIComponent(callerName)}`,
         },
       }),
@@ -911,7 +942,7 @@ export async function sendFcmChatPushNotification(params: {
     if (messageType === 'voice') body = '🎤 ভয়েস বার্তা পাঠিয়েছেন (শুনতে ট্যাপ করুন)';
     else if (messageType === 'image') body = '📷 ছবি পাঠিয়েছেন (দেখতে ট্যাপ করুন)';
 
-    const response = await fetch('/api/send-fcm-notification', {
+    const response = await fetch(getApiEndpoint('/api/send-fcm-notification'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

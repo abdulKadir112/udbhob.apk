@@ -5,17 +5,61 @@ import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
+import com.google.firebase.messaging.FirebaseMessaging
 
 @CapacitorPlugin(name = "NativeCall")
 class NativeCallPlugin : Plugin() {
 
     companion object {
         var instance: NativeCallPlugin? = null
+        var pendingCall: JSObject? = null
     }
 
     override fun load() {
         super.load()
         instance = this
+    }
+
+    @PluginMethod
+    fun getFcmToken(call: PluginCall) {
+        try {
+            FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                if (task.isSuccessful) {
+                    val token = task.result
+                    val ret = JSObject().apply {
+                        put("success", true)
+                        put("token", token)
+                    }
+                    call.resolve(ret)
+                } else {
+                    val ret = JSObject().apply {
+                        put("success", false)
+                        put("error", task.exception?.localizedMessage ?: "Failed to get FCM token")
+                    }
+                    call.resolve(ret)
+                }
+            }
+        } catch (e: Exception) {
+            val ret = JSObject().apply {
+                put("success", false)
+                put("error", e.localizedMessage)
+            }
+            call.resolve(ret)
+        }
+    }
+
+    @PluginMethod
+    fun getPendingCallIntent(call: PluginCall) {
+        val pending = pendingCall
+        pendingCall = null
+        val ret = JSObject().apply {
+            put("hasPendingCall", pending != null)
+            if (pending != null) {
+                put("callId", pending.getString("callId"))
+                put("callType", pending.getString("callType") ?: "audio")
+            }
+        }
+        call.resolve(ret)
     }
 
     @PluginMethod
@@ -58,6 +102,7 @@ class NativeCallPlugin : Plugin() {
             put("callId", callId)
             put("callType", callType)
         }
+        pendingCall = data
         notifyListeners("callAnswered", data)
     }
 
@@ -66,5 +111,12 @@ class NativeCallPlugin : Plugin() {
             put("callId", callId)
         }
         notifyListeners("callDeclined", data)
+    }
+
+    fun notifyTokenRefreshed(token: String) {
+        val data = JSObject().apply {
+            put("token", token)
+        }
+        notifyListeners("tokenRefreshed", data)
     }
 }

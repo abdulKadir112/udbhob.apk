@@ -33,12 +33,13 @@ import {
   sendPushNotification,
   sendFcmCallPushNotification,
   sendFcmChatPushNotification,
+  syncFcmTokenToFirestore,
   registerServiceWorker,
   requestScreenWakeLock,
   releaseScreenWakeLock,
   safeVibrate,
 } from '../utils/pushNotification';
-import { registerNativeCallBridge, endNativeCall } from '../utils/nativeCall';
+import { registerNativeCallBridge, endNativeCall, NativeCall, isNativeApp } from '../utils/nativeCall';
 import {
   saveMessagesOffline,
   loadMessagesOffline,
@@ -939,10 +940,24 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       },
     });
 
+    let tokenRefreshHandle: any = null;
+    if (isNativeApp()) {
+      NativeCall.addListener('tokenRefreshed', (data) => {
+        if (data.token) {
+          console.log('[ChatContext] Native token refreshed:', data.token);
+          localStorage.setItem('probashi_fcm_token', data.token);
+          syncFcmTokenToFirestore(data.token, myId, effectiveFundId);
+        }
+      }).then((h) => {
+        tokenRefreshHandle = h;
+      }).catch(() => {});
+    }
+
     return () => {
       unbind();
+      tokenRefreshHandle?.remove();
     };
-  }, [myId, incomingCall]);
+  }, [myId, incomingCall, effectiveFundId]);
 
   // Check URL parameters when window opens from lock-screen notification click or push tap
   useEffect(() => {

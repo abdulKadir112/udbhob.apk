@@ -115,11 +115,15 @@ function MainApp() {
 
   // Sync FCM token with Firestore and listen to foreground push events
   useEffect(() => {
-    if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+    if (typeof window === 'undefined') return;
+
+    if (isNative || ('Notification' in window && Notification.permission === 'granted')) {
       getOrRegisterFcmToken(userSession?.memberId, userSession?.fundId).catch(() => {});
-      initForegroundFcmListener();
+      if (!isNative) {
+        initForegroundFcmListener();
+      }
     }
-  }, [userSession?.memberId, userSession?.fundId]);
+  }, [userSession?.memberId, userSession?.fundId, isNative]);
 
   // Handler to open admin payment form
   const handleOpenAddPayment = () => {
