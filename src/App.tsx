@@ -67,23 +67,36 @@ function MainApp() {
   const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
   const [isFundProfileModalOpen, setIsFundProfileModalOpen] = useState<boolean>(false);
   const [adminDefaultTab, setAdminDefaultTab] = useState<'payment' | 'investment' | 'transactions' | 'members'>('payment');
+  const isNative = typeof window !== 'undefined' && Boolean(
+    (window as any).Capacitor?.isNativePlatform?.() ||
+    (window as any).Capacitor?.getPlatform?.() === 'android'
+  );
+
   const [showInitialPermissionModal, setShowInitialPermissionModal] = useState<boolean>(() => {
-    if (typeof window !== 'undefined') {
-      const isCompleted = localStorage.getItem('probashi_core_permissions_setup_done');
-      if (isCompleted === 'true' && 'Notification' in window && Notification.permission === 'granted') {
-        return false;
-      }
-      return true;
+    if (typeof window === 'undefined') return false;
+    // On Native Android APK, permissions are handled natively by Android OS dialogs! Never show web modal.
+    if (isNative) {
+      localStorage.setItem('probashi_core_permissions_setup_done', 'true');
+      localStorage.setItem('probashi_permissions_completed', 'true');
+      return false;
     }
-    return false;
+    const isCompleted = localStorage.getItem('probashi_core_permissions_setup_done') === 'true' ||
+                        localStorage.getItem('probashi_permissions_completed') === 'true' ||
+                        localStorage.getItem('probashi_permissions_prompted') === 'true';
+    if (isCompleted) {
+      return false;
+    }
+    return false; // Don't block screen on initial load
   });
 
   const isBn = language === 'bn';
 
-  // Listen for PWA installation & first install event so all permissions are setup immediately
+  // Listen for PWA installation & first install event so all permissions can be opened if needed
   useEffect(() => {
+    if (isNative) return;
+
     const handleAppInstalled = () => {
-      // User just installed the app to home screen! Trigger permission setup
+      // User just installed the app to home screen on web
       setShowInitialPermissionModal(true);
     };
 
@@ -98,17 +111,7 @@ function MainApp() {
       window.removeEventListener('appinstalled', handleAppInstalled);
       window.removeEventListener('probashi_open_permissions_modal', handleCustomOpenPerms);
     };
-  }, []);
-
-  // Ensure permission setup is presented if not fully completed
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const isCompleted = localStorage.getItem('probashi_core_permissions_setup_done');
-      if (isCompleted !== 'true' || ('Notification' in window && Notification.permission !== 'granted')) {
-        setShowInitialPermissionModal(true);
-      }
-    }
-  }, [userSession?.userId]);
+  }, [isNative]);
 
   // Sync FCM token with Firestore and listen to foreground push events
   useEffect(() => {

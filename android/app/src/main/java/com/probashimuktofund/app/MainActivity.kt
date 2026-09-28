@@ -1,18 +1,13 @@
 package com.probashimuktofund.app
 
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.os.PowerManager
-import android.provider.Settings
 import android.view.View
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.core.view.ViewCompat
-import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowCompat
 import com.getcapacitor.BridgeActivity
 
 class MainActivity : BridgeActivity() {
@@ -24,28 +19,20 @@ class MainActivity : BridgeActivity() {
         super.onCreate(savedInstanceState)
 
         // 1. Status Bar Styling: Match WhatsApp Emerald theme (#005c4b) with crisp white status icons
+        WindowCompat.setDecorFitsSystemWindows(window, true)
         window.statusBarColor = android.graphics.Color.parseColor("#005c4b")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val decorView = window.decorView
             decorView.systemUiVisibility = decorView.systemUiVisibility and View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv()
         }
 
-        // 2. Safe Area Insets: Ensure the app content leaves room for the mobile status bar / notch
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { view, insets ->
-            val statusBarInsets = insets.getInsets(WindowInsetsCompat.Type.statusBars())
-            view.setPadding(0, statusBarInsets.top, 0, 0)
-            insets
-        }
-
-        // 3. Initialize Call Notification Channel
+        // 2. Initialize Call Notification Channel
         CallNotificationManager.createNotificationChannel(this)
 
-        // 4. Request Audio, Camera, and Notification permissions at launch
+        // 3. Request Audio, Camera, and Notification permissions at first launch via native Android dialogs
         checkAndRequestAppPermissions()
 
-        // 5. Request Battery Optimization Exemption for 24/7 Deep Sleep Calling like WhatsApp/IMO
-        requestBatteryOptimizationExemption()
-
+        // 4. Handle any incoming call intents
         handleCallIntent(intent)
     }
 
@@ -63,24 +50,9 @@ class MainActivity : BridgeActivity() {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
 
+        // Prompts native OS dialog only once on first install
         if (needed.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMISSIONS_REQUEST_CODE)
-        }
-    }
-
-    private fun requestBatteryOptimizationExemption() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            try {
-                val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-                if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
-                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                        data = Uri.parse("package:$packageName")
-                    }
-                    startActivity(intent)
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
         }
     }
 

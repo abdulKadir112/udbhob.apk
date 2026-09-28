@@ -16,8 +16,8 @@ export const INITIAL_FUND: Fund = {
   createdAt: '2024-01-01T00:00:00Z',
   coverGradient: 'from-slate-900 via-slate-900 to-emerald-950',
   country: 'Saudi Arabia',
-  logoUrl: '/udbhob_logo.svg',
-  avatarUrl: '/udbhob_logo.svg',
+  logoUrl: '/app-logo.png',
+  avatarUrl: '/app-logo.png',
 };
 
 // Known dummy usernames and project titles that were previously used for demonstration/mocking

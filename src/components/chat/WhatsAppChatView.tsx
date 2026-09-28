@@ -162,6 +162,11 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
   const [voiceProgress, setVoiceProgress] = useState<number>(0);
   const voiceStopFnRef = useRef<(() => void) | null>(null);
 
+  const isNative = typeof window !== 'undefined' && Boolean(
+    (window as any).Capacitor?.isNativePlatform?.() ||
+    (window as any).Capacitor?.getPlatform?.() === 'android'
+  );
+
   // Notification & Lock Screen status state
   const [notifPermission, setNotifPermission] = useState<NotificationPermission>(() => {
     if (typeof window !== 'undefined' && 'Notification' in window) {
@@ -171,7 +176,8 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
   });
   const [isNotifBannerDismissed, setIsNotifBannerDismissed] = useState(() => {
     if (typeof window !== 'undefined') {
-      return localStorage.getItem('probashi_permissions_prompted') === 'true';
+      return localStorage.getItem('probashi_permissions_prompted') === 'true' ||
+             localStorage.getItem('probashi_permissions_completed') === 'true';
     }
     return false;
   });
@@ -684,7 +690,7 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
   return (
     <div className="flex flex-col h-full w-full max-w-5xl mx-auto bg-[#efeae2] shadow-xl overflow-hidden relative border-x border-slate-200">
       {/* 1. TOP HEADER (WHATSAPP COMMUNITY BRANDING) */}
-      <div className="bg-[#005c4b] text-white px-2.5 sm:px-4 py-2 sm:py-2.5 pt-[max(env(safe-area-inset-top),0.5rem)] flex items-center justify-between shadow-md z-30 shrink-0 select-none gap-1 sm:gap-2">
+      <div className="bg-[#005c4b] text-white px-2.5 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between shadow-md z-30 shrink-0 select-none gap-1 sm:gap-2">
         {/* Left: Group/Direct User Avatar & Info */}
         <div
           onClick={() => setIsMembersDrawerOpen(true)}
@@ -1228,8 +1234,8 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
         </div>
       )}
 
-      {/* 2.1 Background & Lock-Screen Call Notification, Mic & Camera Setup Banner */}
-      {notifPermission !== 'granted' && !isNotifBannerDismissed && (
+      {/* 2.1 Background & Lock-Screen Call Notification, Mic & Camera Setup Banner (Web Only) */}
+      {!isNative && notifPermission !== 'granted' && !isNotifBannerDismissed && (
         <div className="bg-gradient-to-r from-amber-600 via-emerald-700 to-teal-800 text-white px-3 py-2 shadow-sm border-b border-emerald-600 flex items-center justify-between z-10 shrink-0 animate-fadeIn">
           <div
             onClick={() => {
@@ -1268,7 +1274,10 @@ export const WhatsAppChatView: React.FC<WhatsAppChatViewProps> = ({
               <span>{isBn ? 'সব এলাউ করুন (Allow All)' : 'Allow All'}</span>
             </button>
             <button
-              onClick={() => setIsNotifBannerDismissed(true)}
+              onClick={() => {
+                setIsNotifBannerDismissed(true);
+                localStorage.setItem('probashi_permissions_prompted', 'true');
+              }}
               className="p-1 text-white/70 hover:text-white rounded-full hover:bg-white/10"
               title="বন্ধ করুন"
             >
