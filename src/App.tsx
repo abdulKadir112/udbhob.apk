@@ -30,6 +30,7 @@ import {
   getOrRegisterFcmToken,
   initForegroundFcmListener,
 } from './utils/pushNotification';
+import { updateNativeSession } from './utils/nativeCall';
 import {
   Wallet,
   Shield,
@@ -123,7 +124,17 @@ function MainApp() {
         initForegroundFcmListener();
       }
     }
-  }, [userSession?.memberId, userSession?.fundId, isNative]);
+
+    if (isNative && userSession?.memberId) {
+      updateNativeSession({
+        memberId: userSession.memberId,
+        fundId: userSession.fundId || 'fund-main',
+        name: userSession.name,
+        role: userSession.role || (isAdmin ? 'admin' : 'member'),
+        isAdmin: Boolean(isAdmin),
+      }).catch(() => {});
+    }
+  }, [userSession?.memberId, userSession?.fundId, userSession?.name, userSession?.role, isAdmin, isNative]);
 
   // Handler to open admin payment form
   const handleOpenAddPayment = () => {

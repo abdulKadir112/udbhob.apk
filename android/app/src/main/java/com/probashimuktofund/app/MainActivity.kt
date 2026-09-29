@@ -16,6 +16,10 @@ import com.getcapacitor.JSObject
 
 class MainActivity : BridgeActivity() {
 
+    companion object {
+        var isAppInForeground: Boolean = false
+    }
+
     private val PERMISSIONS_REQUEST_CODE = 9999
     private val TAG = "MainActivity"
 
@@ -71,11 +75,27 @@ class MainActivity : BridgeActivity() {
 
     override fun onResume() {
         super.onResume()
+        isAppInForeground = true
         try {
             setupWebViewForMedia()
         } catch (e: Exception) {
             Log.w(TAG, "onResume setup error", e)
         }
+        try {
+            ProbashiRealtimeCallService.start(this)
+        } catch (e: Exception) {
+            Log.w(TAG, "ProbashiRealtimeCallService start error", e)
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        isAppInForeground = false
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        isAppInForeground = false
     }
 
     private fun setupWebViewForMedia() {

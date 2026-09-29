@@ -97,6 +97,54 @@ class NativeCallPlugin : Plugin() {
         call.resolve(ret)
     }
 
+    @PluginMethod
+    fun updateSession(call: PluginCall) {
+        val memberId = call.getString("memberId") ?: ""
+        val fundId = call.getString("fundId") ?: "fund-main"
+        val name = call.getString("name") ?: ""
+        val role = call.getString("role") ?: "member"
+        val isAdmin = call.getBoolean("isAdmin", false) ?: false
+
+        try {
+            ProbashiRealtimeCallService.updateSession(
+                context = context,
+                memberId = memberId,
+                fundId = fundId,
+                name = name,
+                role = role,
+                isAdmin = isAdmin
+            )
+            val ret = JSObject().apply {
+                put("success", true)
+                put("serviceRunning", true)
+            }
+            call.resolve(ret)
+        } catch (e: Exception) {
+            val ret = JSObject().apply {
+                put("success", false)
+                put("error", e.localizedMessage)
+            }
+            call.resolve(ret)
+        }
+    }
+
+    @PluginMethod
+    fun startBackgroundService(call: PluginCall) {
+        try {
+            ProbashiRealtimeCallService.start(context)
+            val ret = JSObject().apply {
+                put("success", true)
+            }
+            call.resolve(ret)
+        } catch (e: Exception) {
+            val ret = JSObject().apply {
+                put("success", false)
+                put("error", e.localizedMessage)
+            }
+            call.resolve(ret)
+        }
+    }
+
     fun notifyCallAnswered(callId: String, callType: String) {
         val data = JSObject().apply {
             put("callId", callId)

@@ -16,6 +16,16 @@ export interface NativeCallPluginInterface {
 
   getPendingCallIntent(): Promise<{ hasPendingCall: boolean; callId?: string; callType?: string }>;
 
+  updateSession(options: {
+    memberId: string;
+    fundId: string;
+    name?: string;
+    role?: string;
+    isAdmin?: boolean;
+  }): Promise<{ success: boolean; serviceRunning?: boolean }>;
+
+  startBackgroundService(): Promise<{ success: boolean }>;
+
   addListener(
     eventName: 'callAnswered',
     listenerFunc: (data: {
@@ -176,4 +186,45 @@ export function registerNativeCallBridge(callbacks: {
     declineHandle?.remove();
     window.removeEventListener('native_accept_call', handleWindowCustomEvent);
   };
+}
+
+/**
+ * Sync active user session to Native Android background service
+ * so Firestore listeners in Android background service wake up the phone on incoming calls.
+ */
+export async function updateNativeSession(params: {
+  memberId: string;
+  fundId?: string;
+  name?: string;
+  role?: string;
+  isAdmin?: boolean;
+}): Promise<boolean> {
+  if (!isNativeApp()) return false;
+  try {
+    const res = await NativeCall.updateSession({
+      memberId: params.memberId,
+      fundId: params.fundId || 'fund-main',
+      name: params.name || '',
+      role: params.role || 'member',
+      isAdmin: Boolean(params.isAdmin),
+    });
+    return Boolean(res.success);
+  } catch (e) {
+    console.warn('[NativeCall] updateSession error:', e);
+    return false;
+  }
+}
+
+/**
+ * Start the Native Android Realtime Foreground Service
+ */
+export async function startNativeBackgroundService(): Promise<boolean> {
+  if (!isNativeApp()) return false;
+  try {
+    const res = await NativeCall.startBackgroundService();
+    return Boolean(res.success);
+  } catch (e) {
+    console.warn('[NativeCall] startBackgroundService error:', e);
+    return false;
+  }
 }

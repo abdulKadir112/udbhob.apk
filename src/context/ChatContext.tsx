@@ -39,7 +39,7 @@ import {
   releaseScreenWakeLock,
   safeVibrate,
 } from '../utils/pushNotification';
-import { registerNativeCallBridge, endNativeCall, NativeCall, isNativeApp } from '../utils/nativeCall';
+import { registerNativeCallBridge, endNativeCall, NativeCall, isNativeApp, updateNativeSession } from '../utils/nativeCall';
 import {
   saveMessagesOffline,
   loadMessagesOffline,
@@ -277,6 +277,17 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // Report immediately on load
     reportHeartbeat(true);
+
+    // Sync native Android background service for deep-sleep call handling
+    if (isNativeApp() && myId) {
+      updateNativeSession({
+        memberId: myId,
+        fundId: effectiveFundId,
+        name: myName,
+        role: myRole,
+        isAdmin: Boolean(isAdmin),
+      }).catch(() => {});
+    }
 
     // Heartbeat every 20 seconds
     const interval = setInterval(() => {
