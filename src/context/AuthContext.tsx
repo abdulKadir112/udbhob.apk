@@ -15,6 +15,7 @@ import { auth, db } from '../firebase/config';
 import { Member, UserRole, UserSession, Fund } from '../types';
 import { cleanForFirestore } from '../utils/firestoreUtils';
 import { DEFAULT_FUND_ID } from '../data/seedData';
+import { updateNativeSession } from '../utils/nativeCall';
 
 interface AuthContextType {
   currentUser: FirebaseUser | null;
@@ -96,6 +97,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setUserRole(session.role);
       setActiveFundIdState(session.fundId);
       setActiveMemberId(session.memberId || null);
+
+      updateNativeSession({
+        memberId: session.memberId || session.uid || '',
+        fundId: session.fundId || 'fund-main',
+        name: session.displayName || session.username || '',
+        username: session.username || '',
+        role: session.role || 'member',
+        isAdmin: session.role === 'admin',
+      }).catch(() => {});
     } else {
       localStorage.removeItem(SESSION_STORAGE_KEY);
       localStorage.removeItem('probashi_user_role');
@@ -115,6 +125,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(updated));
     }
   };
+
+  // Ensure Android native service is synchronized on app launch
+  useEffect(() => {
+    if (userSession) {
+      updateNativeSession({
+        memberId: userSession.memberId || userSession.uid || '',
+        fundId: userSession.fundId || 'fund-main',
+        name: userSession.displayName || userSession.username || '',
+        username: userSession.username || '',
+        role: userSession.role || 'member',
+        isAdmin: userSession.role === 'admin',
+      }).catch(() => {});
+    }
+  }, [userSession?.memberId, userSession?.uid, userSession?.username, userSession?.role]);
 
   // Listen to Firebase Auth state
   useEffect(() => {

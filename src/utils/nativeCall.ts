@@ -20,9 +20,14 @@ export interface NativeCallPluginInterface {
     memberId: string;
     fundId: string;
     name?: string;
+    username?: string;
     role?: string;
     isAdmin?: boolean;
   }): Promise<{ success: boolean; serviceRunning?: boolean }>;
+
+  setAudioMode(options: { isCallActive: boolean }): Promise<{ success: boolean }>;
+
+  setSpeakerphoneOn(options: { enabled: boolean }): Promise<{ success: boolean }>;
 
   startBackgroundService(): Promise<{ success: boolean }>;
 
@@ -196,6 +201,7 @@ export async function updateNativeSession(params: {
   memberId: string;
   fundId?: string;
   name?: string;
+  username?: string;
   role?: string;
   isAdmin?: boolean;
 }): Promise<boolean> {
@@ -205,12 +211,41 @@ export async function updateNativeSession(params: {
       memberId: params.memberId,
       fundId: params.fundId || 'fund-main',
       name: params.name || '',
+      username: params.username || '',
       role: params.role || 'member',
       isAdmin: Boolean(params.isAdmin),
     });
     return Boolean(res.success);
   } catch (e) {
     console.warn('[NativeCall] updateSession error:', e);
+    return false;
+  }
+}
+
+/**
+ * Configure VoIP Communication Audio Mode on Native Android
+ */
+export async function setNativeAudioMode(isCallActive: boolean): Promise<boolean> {
+  if (!isNativeApp()) return false;
+  try {
+    const res = await NativeCall.setAudioMode({ isCallActive });
+    return Boolean(res.success);
+  } catch (e) {
+    console.warn('[NativeCall] setAudioMode error:', e);
+    return false;
+  }
+}
+
+/**
+ * Set speakerphone on or off on Native Android
+ */
+export async function setNativeSpeakerphone(enabled: boolean): Promise<boolean> {
+  if (!isNativeApp()) return false;
+  try {
+    const res = await NativeCall.setSpeakerphoneOn({ enabled });
+    return Boolean(res.success);
+  } catch (e) {
+    console.warn('[NativeCall] setSpeakerphone error:', e);
     return false;
   }
 }

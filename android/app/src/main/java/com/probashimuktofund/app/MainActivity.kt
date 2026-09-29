@@ -86,6 +86,65 @@ class MainActivity : BridgeActivity() {
         } catch (e: Exception) {
             Log.w(TAG, "ProbashiRealtimeCallService start error", e)
         }
+
+        // Auto-sync session from web localStorage to Android persistent background service
+        bridge?.webView?.postDelayed({
+            try {
+                bridge?.webView?.evaluateJavascript(
+                    """
+                    (function() {
+                        try {
+                            var sStr = localStorage.getItem('probashi_user_session');
+                            if (sStr) {
+                                var s = JSON.parse(sStr);
+                                return JSON.stringify({
+                                    memberId: s.memberId || s.uid || '',
+                                    fundId: s.fundId || 'fund-main',
+                                    name: s.displayName || s.name || '',
+                                    username: s.username || '',
+                                    role: s.role || 'member',
+                                    isAdmin: s.role === 'admin'
+                                });
+                            }
+                        } catch(e) {}
+                        return '';
+                    })();
+                    """.trimIndent()
+                ) { result ->
+                    try {
+                        if (!result.isNullOrEmpty() && result != "\"\"" && result != "null") {
+                            val cleanJson = if (result.startsWith("\"") && result.endsWith("\"")) {
+                                org.json.JSONTokener(result).nextValue().toString()
+                            } else {
+                                result
+                            }
+                            val jsonObj = org.json.JSONObject(cleanJson)
+                            val mid = jsonObj.optString("memberId", "")
+                            val fid = jsonObj.optString("fundId", "fund-main")
+                            val name = jsonObj.optString("name", "")
+                            val uname = jsonObj.optString("username", "")
+                            val role = jsonObj.optString("role", "member")
+                            val isAdm = jsonObj.optBoolean("isAdmin", false)
+                            if (mid.isNotEmpty() || name.isNotEmpty()) {
+                                ProbashiRealtimeCallService.updateSession(
+                                    context = this,
+                                    memberId = mid,
+                                    fundId = fid,
+                                    name = name,
+                                    username = uname,
+                                    role = role,
+                                    isAdmin = isAdm
+                                )
+                            }
+                        }
+                    } catch (ex: Exception) {
+                        Log.w(TAG, "Sync localStorage session note", ex)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Evaluate JS error", e)
+            }
+        }, 1200)
     }
 
     override fun onPause() {

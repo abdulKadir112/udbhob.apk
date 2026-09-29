@@ -128,7 +128,7 @@ class IncomingCallActivity : AppCompatActivity() {
 
         callId?.let { id ->
             try {
-                val db = FirebaseFirestore.getInstance()
+                val db = ProbashiFirebase.getFirestore(this)
                 db.collection("active_calls").document(id).update("status", "rejected")
             } catch (e: Exception) {
                 Log.w(TAG, "Error updating call status to rejected", e)
@@ -141,7 +141,7 @@ class IncomingCallActivity : AppCompatActivity() {
         CallNotificationManager.dismissCall(this)
         callId?.let { id ->
             try {
-                val db = FirebaseFirestore.getInstance()
+                val db = ProbashiFirebase.getFirestore(this)
                 db.collection("active_calls").document(id).update("status", "missed")
             } catch (e: Exception) {
                 Log.w(TAG, "Error updating call status to missed", e)

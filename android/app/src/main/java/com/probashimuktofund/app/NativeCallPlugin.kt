@@ -102,6 +102,7 @@ class NativeCallPlugin : Plugin() {
         val memberId = call.getString("memberId") ?: ""
         val fundId = call.getString("fundId") ?: "fund-main"
         val name = call.getString("name") ?: ""
+        val username = call.getString("username") ?: ""
         val role = call.getString("role") ?: "member"
         val isAdmin = call.getBoolean("isAdmin", false) ?: false
 
@@ -111,12 +112,59 @@ class NativeCallPlugin : Plugin() {
                 memberId = memberId,
                 fundId = fundId,
                 name = name,
+                username = username,
                 role = role,
                 isAdmin = isAdmin
             )
             val ret = JSObject().apply {
                 put("success", true)
                 put("serviceRunning", true)
+            }
+            call.resolve(ret)
+        } catch (e: Exception) {
+            val ret = JSObject().apply {
+                put("success", false)
+                put("error", e.localizedMessage)
+            }
+            call.resolve(ret)
+        }
+    }
+
+    @PluginMethod
+    fun setAudioMode(call: PluginCall) {
+        val isCallActive = call.getBoolean("isCallActive", false) ?: false
+        try {
+            val audioManager = context.getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager
+            audioManager?.let { am ->
+                if (isCallActive) {
+                    am.mode = android.media.AudioManager.MODE_IN_COMMUNICATION
+                    am.isSpeakerphoneOn = true
+                } else {
+                    am.mode = android.media.AudioManager.MODE_NORMAL
+                    am.isSpeakerphoneOn = false
+                }
+            }
+            val ret = JSObject().apply {
+                put("success", true)
+            }
+            call.resolve(ret)
+        } catch (e: Exception) {
+            val ret = JSObject().apply {
+                put("success", false)
+                put("error", e.localizedMessage)
+            }
+            call.resolve(ret)
+        }
+    }
+
+    @PluginMethod
+    fun setSpeakerphoneOn(call: PluginCall) {
+        val enabled = call.getBoolean("enabled", true) ?: true
+        try {
+            val audioManager = context.getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager
+            audioManager?.isSpeakerphoneOn = enabled
+            val ret = JSObject().apply {
+                put("success", true)
             }
             call.resolve(ret)
         } catch (e: Exception) {

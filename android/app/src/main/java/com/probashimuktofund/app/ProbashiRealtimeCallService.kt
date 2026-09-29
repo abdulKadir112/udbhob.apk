@@ -9,26 +9,21 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
-import android.media.AudioAttributes
-import android.media.RingtoneManager
-import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.google.firebase.firestore.DocumentChange
-import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
-import com.google.firebase.firestore.Query
 
 /**
  * Native Android Foreground Service that maintains a persistent real-time connection
- * directly with Firebase Firestore.
+ * directly with Firebase Firestore (multi-database instance).
  *
- * This ensures that even when the app is in background, minimized, or phone is in
- * deep sleep / screen off, incoming calls and chat messages are received instantly
- * with real physical ringtone, wake lock, and lock screen UI.
+ * This ensures that even when the app is in background, minimized, phone in deep sleep / screen off,
+ * incoming calls and chat messages are received instantly with real physical ringtone,
+ * wake lock, and lock screen UI.
  */
 class ProbashiRealtimeCallService : Service() {
 
@@ -41,6 +36,7 @@ class ProbashiRealtimeCallService : Service() {
         const val KEY_MEMBER_ID = "member_id"
         const val KEY_FUND_ID = "fund_id"
         const val KEY_USER_NAME = "user_name"
+        const val KEY_USERNAME = "user_username"
         const val KEY_USER_ROLE = "user_role"
         const val KEY_IS_ADMIN = "is_admin"
 
@@ -73,6 +69,7 @@ class ProbashiRealtimeCallService : Service() {
             memberId: String,
             fundId: String,
             name: String?,
+            username: String?,
             role: String?,
             isAdmin: Boolean
         ) {
@@ -81,10 +78,12 @@ class ProbashiRealtimeCallService : Service() {
                 putString(KEY_MEMBER_ID, memberId)
                 putString(KEY_FUND_ID, fundId)
                 putString(KEY_USER_NAME, name ?: "")
+                putString(KEY_USERNAME, username ?: "")
                 putString(KEY_USER_ROLE, role ?: "")
                 putBoolean(KEY_IS_ADMIN, isAdmin)
                 apply()
             }
+            Log.i(TAG, "Session updated in SharedPreferences: memberId=$memberId, name=$name, username=$username, isAdmin=$isAdmin")
             // Trigger service to start or reload listeners
             start(context)
         }
@@ -172,13 +171,14 @@ class ProbashiRealtimeCallService : Service() {
 
     private fun attachFirestoreListeners() {
         try {
-            val db = FirebaseFirestore.getInstance()
+            val db = ProbashiFirebase.getFirestore(applicationContext)
             val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val myMemberId = prefs.getString(KEY_MEMBER_ID, "") ?: ""
             val myName = prefs.getString(KEY_USER_NAME, "") ?: ""
+            val myUsername = prefs.getString(KEY_USERNAME, "") ?: ""
             val isAdmin = prefs.getBoolean(KEY_IS_ADMIN, false)
 
-            Log.i(TAG, "Attaching Firestore listeners for member: '$myMemberId', name: '$myName', isAdmin: $isAdmin")
+            Log.i(TAG, "Attaching Firestore listeners: memberId='$myMemberId', name='$myName', username='$myUsername', isAdmin=$isAdmin")
 
             // 1. Listen for Active Incoming Calls in real time
             callsListener?.remove()
@@ -208,32 +208,47 @@ class ProbashiRealtimeCallService : Service() {
                         val data = doc.data
                         val callId = doc.id
                         val callerId = data["callerId"] as? String ?: ""
+                        val callerName = data["callerName"] as? String ?: "প্রবাসী সদস্য"
+                        val callerUsername = data["callerUsername"] as? String ?: ""
+                        val callerRole = data["callerRole"] as? String ?: "member"
+                        val callerCountry = data["callerCountry"] as? String ?: "প্রবাসী"
+                        val callerAvatar = data["callerAvatar"] as? String
                         val targetId = data["targetId"] as? String ?: ""
                         val targetName = data["targetName"] as? String ?: ""
+                        val targetUsername = data["targetUsername"] as? String ?: ""
                         val targetRole = data["targetRole"] as? String ?: ""
                         val isGroup = data["isGroup"] as? Boolean ?: false
                         val timestamp = (data["timestamp"] as? Number)?.toLong() ?: now
                         val callType = data["type"] as? String ?: "audio"
-                        val callerName = data["callerName"] as? String ?: "প্রবাসী সদস্য"
-                        val callerRole = data["callerRole"] as? String ?: "member"
-                        val callerCountry = data["callerCountry"] as? String ?: "প্রবাসী"
-                        val callerAvatar = data["callerAvatar"] as? String
 
-                        // Ignore calls initiated by myself
-                        if (myMemberId.isNotEmpty() && callerId == myMemberId) {
+                        // Never ring caller's own device
+                        val isMeCaller = (myMemberId.isNotEmpty() && callerId == myMemberId) ||
+                                (myUsername.isNotEmpty() && callerUsername.equals(myUsername, ignoreCase = true)) ||
+                                (myName.isNotEmpty() && callerName.equals(myName, ignoreCase = true))
+
+                        if (isMeCaller) {
                             continue
                         }
 
-                        // Ignore stale calls (> 45 seconds old)
-                        if (now - timestamp > 45000) {
+                        // Ignore calls older than 60 seconds
+                        if (now - timestamp > 60000) {
                             continue
                         }
 
-                        // Check if I am the intended recipient
-                        val isForMe = (myMemberId.isNotEmpty() && targetId == myMemberId) ||
-                                (myName.isNotEmpty() && targetName == myName) ||
-                                (isAdmin && (targetRole == "admin" || targetId == "admin_master_001" || targetId == "admin")) ||
-                                isGroup
+                        // Determine if call is intended for this user
+                        val isDirectTarget = (myMemberId.isNotEmpty() && targetId == myMemberId) ||
+                                (myUsername.isNotEmpty() && targetUsername.equals(myUsername, ignoreCase = true)) ||
+                                (myName.isNotEmpty() && targetName.equals(myName, ignoreCase = true))
+
+                        val isAdminTarget = isAdmin && (
+                                targetRole == "admin" ||
+                                targetId == "admin_master_001" ||
+                                targetId == "admin" ||
+                                targetName.contains("এডমিন") ||
+                                targetName.contains("অ্যাডমিন")
+                        )
+
+                        val isForMe = isDirectTarget || isAdminTarget || isGroup
 
                         if (isForMe) {
                             if (currentRingingCallId != callId) {
@@ -255,7 +270,7 @@ class ProbashiRealtimeCallService : Service() {
                                 specificCallListener = db.collection("active_calls").document(callId)
                                     .addSnapshotListener { callSnap, _ ->
                                         val status = callSnap?.getString("status")
-                                        if (status != null && status != "ringing") {
+                                        if (status == null || status != "ringing") {
                                             Log.i(TAG, "Call status changed to '$status', dismissing ringtone")
                                             CallNotificationManager.dismissCall(applicationContext)
                                             currentRingingCallId = null
@@ -272,8 +287,7 @@ class ProbashiRealtimeCallService : Service() {
             chatListener?.remove()
             isFirstChatSnapshot = true
             chatListener = db.collection("chat_messages")
-                .orderBy("timestamp", Query.Direction.DESCENDING)
-                .limit(10)
+                .limit(35)
                 .addSnapshotListener { snapshot, error ->
                     if (error != null) {
                         Log.w(TAG, "Chat listener error", error)
@@ -299,20 +313,23 @@ class ProbashiRealtimeCallService : Service() {
                         val isDirect = data["isDirect"] as? Boolean ?: false
                         val recipientId = data["recipientId"] as? String ?: ""
                         val recipientRole = data["recipientRole"] as? String ?: ""
+                        val recipientName = data["recipientName"] as? String ?: ""
                         val type = data["type"] as? String ?: "text"
                         val text = data["text"] as? String ?: ""
 
                         if (myMemberId.isNotEmpty() && senderId == myMemberId) continue
+                        if (myName.isNotEmpty() && senderName.equals(myName, ignoreCase = true)) continue
                         if (type == "call_log") continue
 
-                        val isForMe = if (isDirect) {
+                        val isDirectForMe = if (isDirect) {
                             (myMemberId.isNotEmpty() && recipientId == myMemberId) ||
-                            (isAdmin && (recipientRole == "admin" || recipientId == "admin"))
+                            (myName.isNotEmpty() && recipientName.equals(myName, ignoreCase = true)) ||
+                            (isAdmin && (recipientRole == "admin" || recipientId == "admin" || recipientId == "admin_master_001"))
                         } else {
                             true // Community announcement or group chat
                         }
 
-                        if (isForMe) {
+                        if (isDirectForMe) {
                             val title = if (isDirect) "$senderName (সরাসরি বার্তা)" else "$senderName • প্রবাসী মুক্ত ফান্ড"
                             val body = when (type) {
                                 "voice" -> "🎤 একটি ভয়েস বার্তা পাঠিয়েছেন"

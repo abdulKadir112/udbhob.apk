@@ -28,7 +28,7 @@ class CallActionReceiver : BroadcastReceiver() {
 
                 // Update Firestore call state
                 try {
-                    val db = FirebaseFirestore.getInstance()
+                    val db = ProbashiFirebase.getFirestore(context)
                     db.collection("active_calls").document(callId).update("status", "rejected")
                 } catch (e: Exception) {
                     e.printStackTrace()

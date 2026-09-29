@@ -39,7 +39,15 @@ import {
   releaseScreenWakeLock,
   safeVibrate,
 } from '../utils/pushNotification';
-import { registerNativeCallBridge, endNativeCall, NativeCall, isNativeApp, updateNativeSession } from '../utils/nativeCall';
+import {
+  registerNativeCallBridge,
+  endNativeCall,
+  NativeCall,
+  isNativeApp,
+  updateNativeSession,
+  setNativeAudioMode,
+  setNativeSpeakerphone,
+} from '../utils/nativeCall';
 import {
   saveMessagesOffline,
   loadMessagesOffline,
@@ -284,6 +292,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
         memberId: myId,
         fundId: effectiveFundId,
         name: myName,
+        username: myUsername,
         role: myRole,
         isAdmin: Boolean(isAdmin),
       }).catch(() => {});
@@ -620,6 +629,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (activeCall?.id || incomingCall?.id) {
       endNativeCall(activeCall?.id || incomingCall?.id).catch(() => {});
     }
+    setNativeAudioMode(false).catch(() => {});
     setActiveCall(null);
     setIncomingCall(null);
   };
@@ -703,6 +713,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     webrtcManager.startCaller(callId, type, () => {}).catch((err) => {
       console.warn('WebRTC caller startup error:', err);
     });
+    setNativeAudioMode(true).catch(() => {});
 
     // 🚀 Dispatch Firestore Signaling and High-Urgency FCM Push simultaneously in parallel
     const callDocData = {
@@ -827,6 +838,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     webrtcManager.startCallee(incomingCall.id, incomingCall.type, () => {}).catch((err) => {
       console.warn('WebRTC callee startup error:', err);
     });
+    setNativeAudioMode(true).catch(() => {});
 
     // Update Firestore status to 'connected'
     try {
@@ -1163,6 +1175,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     }
 
+    setNativeAudioMode(false).catch(() => {});
     setActiveCall(null);
     setRunningGroupCall(null);
   };
@@ -1186,7 +1199,12 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const toggleSpeaker = () => {
-    setActiveCall((prev) => (prev ? { ...prev, isSpeakerOn: !prev.isSpeakerOn } : null));
+    setActiveCall((prev) => {
+      if (!prev) return null;
+      const newSpeaker = !prev.isSpeakerOn;
+      setNativeSpeakerphone(newSpeaker).catch(() => {});
+      return { ...prev, isSpeakerOn: newSpeaker };
+    });
   };
 
   const toggleCameraFacing = () => {
