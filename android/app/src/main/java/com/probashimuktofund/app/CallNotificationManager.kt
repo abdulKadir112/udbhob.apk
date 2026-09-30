@@ -125,9 +125,10 @@ object CallNotificationManager {
         )
 
         val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        val appIcon = context.applicationInfo.icon.takeIf { it != 0 } ?: android.R.drawable.stat_notify_chat
 
         val notification = NotificationCompat.Builder(context, GENERAL_CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(appIcon)
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))

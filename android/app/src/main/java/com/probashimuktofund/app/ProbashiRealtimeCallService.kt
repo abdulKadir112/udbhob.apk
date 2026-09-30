@@ -142,8 +142,9 @@ class ProbashiRealtimeCallService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
+            val appIcon = applicationInfo.icon.takeIf { it != 0 } ?: android.R.drawable.stat_notify_sync
             val notification = NotificationCompat.Builder(this, SERVICE_CHANNEL_ID)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(appIcon)
                 .setContentTitle("প্রবাসী মুক্ত ফান্ড সক্রিয়")
                 .setContentText("কল ও বার্তার রিয়েল-টাইম কানেকশন চালু আছে")
                 .setPriority(NotificationCompat.PRIORITY_MIN)

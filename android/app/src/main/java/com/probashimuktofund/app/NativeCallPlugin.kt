@@ -1,5 +1,12 @@
 package com.probashimuktofund.app
 
+import android.content.Context
+import android.content.Intent
+import android.media.AudioManager
+import android.net.Uri
+import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -178,8 +185,8 @@ class NativeCallPlugin : Plugin() {
 
     @PluginMethod
     fun isIgnoringBatteryOptimization(call: PluginCall) {
-        val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
-        val isIgnoring = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        val isIgnoring = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             powerManager?.isIgnoringBatteryOptimizations(context.packageName) ?: false
         } else {
             true
@@ -193,11 +200,11 @@ class NativeCallPlugin : Plugin() {
     @PluginMethod
     fun requestIgnoreBatteryOptimization(call: PluginCall) {
         try {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
                 if (powerManager != null && !powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
-                    val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                        data = android.net.Uri.parse("package:${context.packageName}")
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:${context.packageName}")
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     }
                     context.startActivity(intent)
