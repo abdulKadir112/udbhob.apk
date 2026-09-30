@@ -29,6 +29,10 @@ export interface NativeCallPluginInterface {
 
   setSpeakerphoneOn(options: { enabled: boolean }): Promise<{ success: boolean }>;
 
+  isIgnoringBatteryOptimization(): Promise<{ isIgnoring: boolean }>;
+
+  requestIgnoreBatteryOptimization(): Promise<{ success: boolean }>;
+
   startBackgroundService(): Promise<{ success: boolean }>;
 
   addListener(
@@ -260,6 +264,34 @@ export async function startNativeBackgroundService(): Promise<boolean> {
     return Boolean(res.success);
   } catch (e) {
     console.warn('[NativeCall] startBackgroundService error:', e);
+    return false;
+  }
+}
+
+/**
+ * Check if the app is currently exempt from Android battery optimization / Doze mode
+ */
+export async function checkBatteryOptimizationExempt(): Promise<boolean> {
+  if (!isNativeApp()) return true;
+  try {
+    const res = await NativeCall.isIgnoringBatteryOptimization();
+    return Boolean(res.isIgnoring);
+  } catch (e) {
+    return true;
+  }
+}
+
+/**
+ * Request exemption from Android battery optimization / Doze mode
+ * so notifications and background connection are never killed in Deep Sleep.
+ */
+export async function promptBatteryOptimizationExempt(): Promise<boolean> {
+  if (!isNativeApp()) return false;
+  try {
+    const res = await NativeCall.requestIgnoreBatteryOptimization();
+    return Boolean(res.success);
+  } catch (e) {
+    console.warn('[NativeCall] requestIgnoreBatteryOptimization error:', e);
     return false;
   }
 }

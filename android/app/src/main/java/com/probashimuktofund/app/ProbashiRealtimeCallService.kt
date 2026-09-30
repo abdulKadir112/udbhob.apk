@@ -336,42 +336,17 @@ class ProbashiRealtimeCallService : Service() {
                                 "image" -> "📷 একটি ছবি পাঠিয়েছেন"
                                 else -> if (text.isNotEmpty()) text else "একটি নতুন বার্তা এসেছে"
                             }
-                            showChatMessageNotification(title, body, senderId)
+                            CallNotificationManager.showGeneralMessageNotification(
+                                context = applicationContext,
+                                title = title,
+                                body = body,
+                                senderId = senderId
+                            )
                         }
                     }
                 }
         } catch (e: Exception) {
             Log.e(TAG, "Error attaching Firestore listeners in service", e)
-        }
-    }
-
-    private fun showChatMessageNotification(title: String, body: String, senderId: String) {
-        try {
-            val intent = Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                putExtra("DIRECT_USER_ID", senderId)
-            }
-            val pendingIntent = PendingIntent.getActivity(
-                this,
-                (System.currentTimeMillis() % 10000).toInt(),
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-
-            val notification = NotificationCompat.Builder(this, CallNotificationManager.GENERAL_CHANNEL_ID)
-                .setSmallIcon(R.mipmap.ic_launcher)
-                .setContentTitle(title)
-                .setContentText(body)
-                .setAutoCancel(true)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-                .setContentIntent(pendingIntent)
-                .build()
-
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.notify((System.currentTimeMillis() % 10000).toInt(), notification)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error displaying chat message notification", e)
         }
     }
 

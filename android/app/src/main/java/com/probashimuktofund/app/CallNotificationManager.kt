@@ -71,12 +71,78 @@ object CallNotificationManager {
                 description = "প্রবাসী মুক্ত ফান্ড এর চ্যাট বার্তা ও ফান্ড নোটিফিকেশন"
                 enableLights(true)
                 enableVibration(true)
-                vibrationPattern = longArrayOf(0, 250, 150, 250)
+                vibrationPattern = longArrayOf(0, 300, 150, 300)
                 setSound(notifSoundUri, generalAudioAttributes)
                 lockscreenVisibility = android.app.Notification.VISIBILITY_PUBLIC
+                setBypassDnd(true)
             }
             manager.createNotificationChannel(generalChannel)
         }
+    }
+
+    fun showGeneralMessageNotification(
+        context: Context,
+        title: String,
+        body: String,
+        senderId: String? = null
+    ) {
+        createNotificationChannel(context)
+
+        // Wake up device screen and CPU briefly even if in Deep Sleep / Doze mode
+        try {
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            @Suppress("DEPRECATION")
+            val wakeLock = powerManager.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                PowerManager.ON_AFTER_RELEASE,
+                "probashi:msg_screen_wakelock"
+            )
+            wakeLock.acquire(5000)
+        } catch (e: Exception) {
+            try {
+                val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                val wakeLock = powerManager.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "probashi:msg_partial_wakelock"
+                )
+                wakeLock.acquire(5000)
+            } catch (e2: Exception) {
+                e2.printStackTrace()
+            }
+        }
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            senderId?.let { putExtra("DIRECT_USER_ID", it) }
+        }
+        val notifId = (System.currentTimeMillis() % 100000).toInt()
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            notifId,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+
+        val notification = NotificationCompat.Builder(context, GENERAL_CHANNEL_ID)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(title)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setSound(soundUri)
+            .setVibrate(longArrayOf(0, 300, 150, 300))
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(notifId, notification)
     }
 
     fun showIncomingCallNotification(

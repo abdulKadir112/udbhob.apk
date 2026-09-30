@@ -42,35 +42,15 @@ class ProbashiFirebaseMessagingService : FirebaseMessagingService() {
         } else {
             // Standard notification (payment approved, chat message, announcement, etc.)
             val title = data["title"] ?: remoteMessage.notification?.title ?: "প্রবাসী মুক্ত ফান্ড"
-            val body = data["body"] ?: remoteMessage.notification?.body ?: "নতুন নোটিফিকেশন"
+            val body = data["body"] ?: remoteMessage.notification?.body ?: "নতুন বার্তা এসেছে"
+            val senderId = data["senderId"] ?: data["sender_id"]
 
-            showGeneralNotification(title, body)
+            CallNotificationManager.showGeneralMessageNotification(
+                context = applicationContext,
+                title = title,
+                body = body,
+                senderId = senderId
+            )
         }
-    }
-
-    private fun showGeneralNotification(title: String, body: String) {
-        CallNotificationManager.createNotificationChannel(applicationContext)
-
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-        }
-        val pendingIntent = PendingIntent.getActivity(
-            this,
-            0,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val notification = NotificationCompat.Builder(this, CallNotificationManager.GENERAL_CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setContentIntent(pendingIntent)
-            .build()
-
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify((System.currentTimeMillis() % 10000).toInt(), notification)
     }
 }

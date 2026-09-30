@@ -699,19 +699,47 @@ export async function syncFcmTokenToFirestore(currentToken: string, memberId?: s
 
   if (effectiveMemberId && db) {
     try {
-      const memberRef = doc(db, 'funds', effectiveFundId, 'members', effectiveMemberId);
-      await updateDoc(memberRef, {
-        fcmToken: currentToken,
-        fcmTokenUpdatedAt: new Date().toISOString(),
-      }).catch(async () => {
-        const userRef = doc(db, 'users', effectiveMemberId);
-        await setDoc(
-          userRef,
-          { fcmToken: currentToken, updatedAt: new Date().toISOString() },
-          { merge: true }
-        ).catch(() => {});
-      });
-      console.log('✅ FCM Token successfully synced to Firestore for member:', effectiveMemberId);
+      const nowIso = new Date().toISOString();
+
+      // 1. Primary: Save directly to root 'members' collection (where members live in this app)
+      const memberRef = doc(db, 'members', effectiveMemberId);
+      await setDoc(
+        memberRef,
+        { fcmToken: currentToken, fcmTokenUpdatedAt: nowIso },
+        { merge: true }
+      ).catch(() => {});
+
+      // 2. Save to 'users' collection
+      const userRef = doc(db, 'users', effectiveMemberId);
+      await setDoc(
+        userRef,
+        { fcmToken: currentToken, updatedAt: nowIso },
+        { merge: true }
+      ).catch(() => {});
+
+      // 3. Dedicated fast lookup in 'fcm_tokens' collection
+      const tokenDocRef = doc(db, 'fcm_tokens', effectiveMemberId);
+      await setDoc(
+        tokenDocRef,
+        {
+          memberId: effectiveMemberId,
+          fundId: effectiveFundId,
+          fcmToken: currentToken,
+          updatedAt: nowIso,
+          isNative: isNativeApp(),
+        },
+        { merge: true }
+      ).catch(() => {});
+
+      // 4. Save to 'funds/{fundId}/members/{memberId}' for complete compatibility
+      const fundMemberRef = doc(db, 'funds', effectiveFundId, 'members', effectiveMemberId);
+      await setDoc(
+        fundMemberRef,
+        { fcmToken: currentToken, fcmTokenUpdatedAt: nowIso },
+        { merge: true }
+      ).catch(() => {});
+
+      console.log('✅ FCM Token successfully synced across all Firestore collections for member:', effectiveMemberId);
     } catch (dbErr) {
       console.warn('Error saving FCM token to Firestore:', dbErr);
     }
@@ -822,23 +850,48 @@ export async function initForegroundFcmListener(onMessageCallback?: (payload: an
  */
 export async function getFcmTokensForMembers(memberIds: string[], fundId: string = 'fund-main'): Promise<string[]> {
   if (!db || !memberIds || memberIds.length === 0) return [];
-  const uniqueMemberIds = Array.from(new Set(memberIds.filter(Boolean)));
-  
+
+  // Expand admin aliases if target includes admin
+  const expandedIds = new Set<string>();
+  memberIds.filter(Boolean).forEach((mid) => {
+    expandedIds.add(mid);
+    if (mid === 'admin' || mid === 'admin_master_001') {
+      expandedIds.add('admin');
+      expandedIds.add('admin_master_001');
+    }
+  });
+
+  const uniqueMemberIds = Array.from(expandedIds);
+
   try {
     const tokenPromises = uniqueMemberIds.map(async (mid) => {
       try {
-        // 1. Check member document in fund
-        const memberDoc = await getDoc(doc(db, 'funds', fundId, 'members', mid)).catch(() => null);
-        if (memberDoc?.exists()) {
-          const t = memberDoc.data()?.fcmToken;
-          if (t && typeof t === 'string') return t;
+        // 1. Primary: Check root 'members' collection
+        const rootMemberDoc = await getDoc(doc(db, 'members', mid)).catch(() => null);
+        if (rootMemberDoc?.exists()) {
+          const t = rootMemberDoc.data()?.fcmToken;
+          if (t && typeof t === 'string' && t.length > 10) return t;
         }
 
-        // 2. Check user document
+        // 2. Fast lookup: Check dedicated 'fcm_tokens' collection
+        const tokenDoc = await getDoc(doc(db, 'fcm_tokens', mid)).catch(() => null);
+        if (tokenDoc?.exists()) {
+          const t = tokenDoc.data()?.fcmToken;
+          if (t && typeof t === 'string' && t.length > 10) return t;
+        }
+
+        // 3. Check 'users' collection
         const userDoc = await getDoc(doc(db, 'users', mid)).catch(() => null);
         if (userDoc?.exists()) {
           const t = userDoc.data()?.fcmToken;
-          if (t && typeof t === 'string') return t;
+          if (t && typeof t === 'string' && t.length > 10) return t;
+        }
+
+        // 4. Check nested member in fund
+        const memberDoc = await getDoc(doc(db, 'funds', fundId, 'members', mid)).catch(() => null);
+        if (memberDoc?.exists()) {
+          const t = memberDoc.data()?.fcmToken;
+          if (t && typeof t === 'string' && t.length > 10) return t;
         }
       } catch (e) {
         console.warn(`Error fetching FCM token for member ${mid}:`, e);
@@ -847,7 +900,7 @@ export async function getFcmTokensForMembers(memberIds: string[], fundId: string
     });
 
     const results = await Promise.all(tokenPromises);
-    const tokens = results.filter((t): t is string => Boolean(t) && typeof t === 'string');
+    const tokens = results.filter((t): t is string => Boolean(t) && typeof t === 'string' && t.length > 10);
     return Array.from(new Set(tokens));
   } catch (err) {
     console.warn('getFcmTokensForMembers error:', err);
@@ -956,8 +1009,12 @@ export async function sendFcmChatPushNotification(params: {
         isCall: false,
         data: {
           action: 'new_message',
+          type: 'chat_message',
           senderId: senderId || '',
           senderName,
+          title: `💬 ${senderName} (প্রবাসী বার্তা)`,
+          body,
+          messageType: messageType || 'text',
           url: senderId ? `/?tab=chat&directUser=${senderId}` : `/?tab=chat`,
         },
       }),

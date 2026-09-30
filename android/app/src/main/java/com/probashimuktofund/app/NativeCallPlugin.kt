@@ -177,6 +177,46 @@ class NativeCallPlugin : Plugin() {
     }
 
     @PluginMethod
+    fun isIgnoringBatteryOptimization(call: PluginCall) {
+        val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+        val isIgnoring = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            powerManager?.isIgnoringBatteryOptimizations(context.packageName) ?: false
+        } else {
+            true
+        }
+        val ret = JSObject().apply {
+            put("isIgnoring", isIgnoring)
+        }
+        call.resolve(ret)
+    }
+
+    @PluginMethod
+    fun requestIgnoreBatteryOptimization(call: PluginCall) {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as? android.os.PowerManager
+                if (powerManager != null && !powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
+                    val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = android.net.Uri.parse("package:${context.packageName}")
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(intent)
+                }
+            }
+            val ret = JSObject().apply {
+                put("success", true)
+            }
+            call.resolve(ret)
+        } catch (e: Exception) {
+            val ret = JSObject().apply {
+                put("success", false)
+                put("error", e.localizedMessage)
+            }
+            call.resolve(ret)
+        }
+    }
+
+    @PluginMethod
     fun startBackgroundService(call: PluginCall) {
         try {
             ProbashiRealtimeCallService.start(context)

@@ -1,9 +1,13 @@
 package com.probashimuktofund.app
 
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import android.view.View
 import android.webkit.PermissionRequest
@@ -59,14 +63,21 @@ class MainActivity : BridgeActivity() {
         }
 
         try {
-            // 4. Configure WebView for WebRTC media streams & autoplay
+            // 4. Request Battery Optimization Exemption so device does not kill notifications in Deep Sleep
+            checkAndRequestBatteryOptimization()
+        } catch (e: Exception) {
+            Log.w(TAG, "Battery optimization check error", e)
+        }
+
+        try {
+            // 5. Configure WebView for WebRTC media streams & autoplay
             setupWebViewForMedia()
         } catch (e: Exception) {
             Log.e(TAG, "WebView setup error", e)
         }
 
         try {
-            // 5. Handle any incoming call intents
+            // 6. Handle any incoming call intents
             handleCallIntent(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Handle call intent error", e)
@@ -200,6 +211,23 @@ class MainActivity : BridgeActivity() {
 
         if (needed.isNotEmpty()) {
             ActivityCompat.requestPermissions(this, needed.toTypedArray(), PERMISSIONS_REQUEST_CODE)
+        }
+    }
+
+    private fun checkAndRequestBatteryOptimization() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                val pkg = packageName
+                if (powerManager != null && !powerManager.isIgnoringBatteryOptimizations(pkg)) {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$pkg")
+                    }
+                    startActivity(intent)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Battery optimization request note", e)
+            }
         }
     }
 

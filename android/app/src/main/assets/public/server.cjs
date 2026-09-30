@@ -153,6 +153,7 @@ app.post("/api/send-fcm-notification", async (req, res) => {
       android: {
         priority: "high",
         ttl: isCall ? 60 * 1e3 : 86400 * 1e3,
+        directBootOk: true,
         // For general messages/announcements only: show system tray notification
         ...!isCall && {
           notification: {
@@ -161,7 +162,7 @@ app.post("/api/send-fcm-notification", async (req, res) => {
             icon: "ic_launcher",
             color: "#005C4B",
             sound: "default",
-            priority: "high",
+            priority: "max",
             visibility: "public",
             channelId: "probashi_general_channel_v2",
             defaultVibrateTimings: true
